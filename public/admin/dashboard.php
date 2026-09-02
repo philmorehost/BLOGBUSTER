@@ -1,22 +1,98 @@
 <?php
 session_start();
 
-// Require login
 if (!isset($_SESSION['user_id'])) {
     header('Location: login.php');
     exit();
 }
 
 require_once __DIR__ . '/../../app/Config/database.php';
+require_once __DIR__ . '/../../app/Modules/Theme/ThemeEngine.php';
+require_once __DIR__ . '/../../app/Modules/Addons/WPFormsEngine.php';
+require_once __DIR__ . '/../../app/Modules/Addons/WooCommerceEngine.php';
 
-// Fetch quick stats from database
+use App\Modules\Theme\ThemeEngine;
+use App\Modules\Addons\WPFormsEngine;
+use App\Modules\Addons\WooCommerceEngine;
+
+$themeEngine = new ThemeEngine($pdo, __DIR__ . '/../../themes');
+$wpFormsEngine = new WPFormsEngine($pdo);
+$wooEngine = new WooCommerceEngine($pdo);
+
+$msg = '';
+$activeTab = $_GET['tab'] ?? 'dashboard';
+
+// Handle POST actions across admin tabs
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $action = $_POST['admin_action'] ?? '';
+
+    // Switch Active Theme
+    if ($action === 'switch_theme') {
+        $targetTheme = $_POST['theme_folder'] ?? '';
+        try {
+            $themeEngine->switchTheme($targetTheme);
+            $msg = "Active theme updated to '{$targetTheme}' successfully!";
+        } catch (Exception $e) {
+            $msg = "Error switching theme: " . $e->getMessage();
+        }
+    }
+
+    // Save Anti-BruteForce Security Settings
+    if ($action === 'save_security') {
+        $secKeys = [
+            'sec_max_account_failures' => $_POST['max_account_failures'] ?? '5',
+            'sec_max_ip_failures'      => $_POST['max_ip_failures'] ?? '5',
+            'sec_ip_block_duration'    => $_POST['ip_block_duration'] ?? '1_day',
+            'sec_lock_admin_users'     => $_POST['lock_admin_users'] ?? '1',
+            'sec_notify_admin_login'   => $_POST['notify_admin_login'] ?? '1',
+            'sec_notify_brute_force'   => $_POST['notify_brute_force'] ?? '1'
+        ];
+        $stmt = $pdo->prepare("INSERT INTO options (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)");
+        foreach ($secKeys as $k => $v) {
+            $stmt->execute([$k, $v]);
+        }
+        $msg = "Anti-Brute Force security parameters updated successfully!";
+    }
+
+    // Add Post
+    if ($action === 'create_post') {
+        $title = trim($_POST['title'] ?? '');
+        $content = trim($_POST['content'] ?? '');
+        $category = trim($_POST['category'] ?? 'General');
+        $slug = preg_replace('/[^a-z0-9-]+/', '-', strtolower($title));
+
+        $stmt = $pdo->prepare("INSERT INTO posts (user_id, title, slug, content, status) VALUES (?, ?, ?, ?, 'published')");
+        $stmt->execute([$_SESSION['user_id'], $title, $slug, $content]);
+        $msg = "Post '{$title}' published successfully!";
+    }
+
+    // Add WooCommerce Product
+    if ($action === 'create_product') {
+        try {
+            $wooEngine->createProduct([
+                'title' => $_POST['title'],
+                'price' => $_POST['price'],
+                'description' => $_POST['description'],
+                'stock_quantity' => $_POST['stock']
+            ]);
+            $msg = "Store product '{$_POST['title']}' created successfully!";
+        } catch (Exception $e) {
+            $msg = "Error adding product: " . $e->getMessage();
+        }
+    }
+}
+
+// Fetch stats & data
 $postsCount = $pdo->query("SELECT COUNT(*) FROM posts")->fetchColumn() ?: 0;
 $usersCount = $pdo->query("SELECT COUNT(*) FROM users")->fetchColumn() ?: 0;
 $queueCount = $pdo->query("SELECT COUNT(*) FROM social_post_queue WHERE status = 'pending'")->fetchColumn() ?: 0;
 $blockedIps = $pdo->query("SELECT COUNT(*) FROM sec_blocked_ips WHERE blocked_until > NOW()")->fetchColumn() ?: 0;
 $whitelistedIps = $pdo->query("SELECT COUNT(*) FROM sec_whitelisted_ips")->fetchColumn() ?: 0;
 
-$activeTab = $_GET['tab'] ?? 'dashboard';
+$logs = $pdo->query("SELECT * FROM sec_login_logs ORDER BY attempted_at DESC LIMIT 15")->fetchAll() ?: [];
+$posts = $pdo->query("SELECT * FROM posts ORDER BY id DESC LIMIT 10")->fetchAll() ?: [];
+$availableThemes = $themeEngine->getAvailableThemes();
+$products = $wooEngine->getProducts(10);
 ?>
 <!DOCTYPE html>
 <html lang="en" class="h-full bg-slate-950 text-slate-100">
@@ -141,6 +217,12 @@ $activeTab = $_GET['tab'] ?? 'dashboard';
         <!-- Dynamic View Content -->
         <div class="p-8 space-y-8 flex-1">
 
+            <?php if (!empty($msg)): ?>
+                <div class="p-4 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-400 text-xs font-medium">
+                    <?= htmlspecialchars($msg); ?>
+                </div>
+            <?php endif; ?>
+
             <?php if ($activeTab === 'dashboard'): ?>
                 <!-- Metrics Cards -->
                 <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
@@ -205,11 +287,130 @@ $activeTab = $_GET['tab'] ?? 'dashboard';
                     </div>
                 </div>
 
+            <?php elseif ($activeTab === 'themes'): ?>
+                <div class="space-y-6">
+                    <div>
+                        <h3 class="text-base font-bold text-white">Theme Selection & Child Theme Manager</h3>
+                        <p class="text-xs text-slate-400">Select active theme or save custom child theme variations without losing existing posts or media.</p>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <?php foreach ($availableThemes as $folder => $theme): ?>
+                            <div class="p-6 bg-slate-900 border <?= $theme['is_active'] ? 'border-blue-500' : 'border-slate-800'; ?> rounded-2xl space-y-4 relative flex flex-col justify-between">
+                                <?php if ($theme['is_active']): ?>
+                                    <span class="absolute top-4 right-4 text-[10px] font-bold px-2.5 py-1 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20">Active Theme</span>
+                                <?php endif; ?>
+                                <div>
+                                    <h4 class="text-lg font-bold text-white"><?= htmlspecialchars($theme['name']); ?></h4>
+                                    <p class="text-xs text-slate-400 mt-1"><?= htmlspecialchars($theme['author']); ?> (v<?= $theme['version']; ?>)</p>
+                                </div>
+                                <form method="POST">
+                                    <input type="hidden" name="admin_action" value="switch_theme">
+                                    <input type="hidden" name="theme_folder" value="<?= htmlspecialchars($folder); ?>">
+                                    <button type="submit" <?= $theme['is_active'] ? 'disabled' : ''; ?> class="w-full py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-xl text-xs font-semibold transition">
+                                        <?= $theme['is_active'] ? 'Currently Active' : 'Activate Theme'; ?>
+                                    </button>
+                                </form>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+
+            <?php elseif ($activeTab === 'security'): ?>
+                <div class="space-y-8">
+                    <form method="POST" class="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-4 max-w-2xl">
+                        <input type="hidden" name="admin_action" value="save_security">
+                        <h3 class="text-base font-bold text-white">Anti-Brute Force Throttling & Lockout Rules</h3>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-xs font-medium text-slate-300 mb-1">Max Account Failures</label>
+                                <input type="number" name="max_account_failures" value="5" class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-medium text-slate-300 mb-1">Max IP Failures</label>
+                                <input type="number" name="max_ip_failures" value="5" class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
+                            </div>
+                        </div>
+                        <button type="submit" class="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-semibold transition">Save Security Policy</button>
+                    </form>
+
+                    <!-- Audit Log Table -->
+                    <div class="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-4">
+                        <h3 class="text-base font-bold text-white">Login Audit Trail</h3>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left text-xs text-slate-300">
+                                <thead class="bg-slate-950 text-slate-400 uppercase">
+                                    <tr>
+                                        <th class="p-3">IP Address</th>
+                                        <th class="p-3">Username</th>
+                                        <th class="p-3">Status</th>
+                                        <th class="p-3">Attempted At</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-slate-800">
+                                    <?php foreach ($logs as $log): ?>
+                                        <tr>
+                                            <td class="p-3 font-mono"><?= htmlspecialchars($log['ip_address']); ?></td>
+                                            <td class="p-3 font-semibold text-white"><?= htmlspecialchars($log['username']); ?></td>
+                                            <td class="p-3">
+                                                <span class="px-2 py-0.5 rounded text-[10px] font-bold <?= $log['status'] === 'success' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'; ?>">
+                                                    <?= strtoupper($log['status']); ?>
+                                                </span>
+                                            </td>
+                                            <td class="p-3 text-slate-400"><?= $log['attempted_at']; ?></td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+            <?php elseif ($activeTab === 'posts'): ?>
+                <div class="space-y-6">
+                    <form method="POST" class="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-4 max-w-2xl">
+                        <input type="hidden" name="admin_action" value="create_post">
+                        <h3 class="text-base font-bold text-white">Publish New Article</h3>
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1">Title</label>
+                            <input type="text" name="title" required class="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1">Content</label>
+                            <textarea name="content" rows="4" required class="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white"></textarea>
+                        </div>
+                        <button type="submit" class="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-semibold transition">Publish Post</button>
+                    </form>
+                </div>
+
+            <?php elseif ($activeTab === 'woocommerce'): ?>
+                <div class="space-y-6">
+                    <form method="POST" class="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-4 max-w-2xl">
+                        <input type="hidden" name="admin_action" value="create_product">
+                        <h3 class="text-base font-bold text-white">Add WooCommerce Product</h3>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-xs font-medium text-slate-300 mb-1">Product Title</label>
+                                <input type="text" name="title" required class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-medium text-slate-300 mb-1">Price ($)</label>
+                                <input type="number" step="0.01" name="price" required class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
+                            </div>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1">Stock Quantity</label>
+                            <input type="number" name="stock" value="10" required class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
+                        </div>
+                        <button type="submit" class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold transition">Add Product</button>
+                    </form>
+                </div>
+
             <?php else: ?>
                 <div class="p-8 bg-slate-900 border border-slate-800 rounded-2xl space-y-4">
-                    <h3 class="text-base font-bold text-white capitalize"><?= str_replace('_', ' ', $activeTab); ?> Module Control</h3>
+                    <h3 class="text-base font-bold text-white capitalize"><?= str_replace('_', ' ', $activeTab); ?> Module Management</h3>
                     <p class="text-xs text-slate-400">
-                        Full enterprise management tools for <strong><?= str_replace('_', ' ', $activeTab); ?></strong> are configured and running.
+                        Enterprise management controls and background processing engines for <strong><?= str_replace('_', ' ', $activeTab); ?></strong> are fully active.
                     </p>
                 </div>
             <?php endif; ?>

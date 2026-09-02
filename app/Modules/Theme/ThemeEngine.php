@@ -60,6 +60,34 @@ class ThemeEngine {
     }
 
     /**
+     * Scan available themes in the themes directory.
+     */
+    public function getAvailableThemes(): array {
+        $themes = [];
+        $dirs = glob($this->themesDir . '/*', GLOB_ONLYDIR);
+
+        foreach ($dirs as $dir) {
+            $folderName = basename($dir);
+            $manifestFile = $dir . '/theme.json';
+
+            if (file_exists($manifestFile)) {
+                $manifest = json_decode(file_get_contents($manifestFile), true) ?: [];
+                $themes[$folderName] = [
+                    'folder' => $folderName,
+                    'name' => $manifest['name'] ?? $folderName,
+                    'version' => $manifest['version'] ?? '1.0.0',
+                    'author' => $manifest['author'] ?? 'BLOGBUSTER Team',
+                    'parent' => $manifest['parent'] ?? null,
+                    'is_active' => ($folderName === $this->activeTheme),
+                    'screenshot' => file_exists($dir . '/screenshot.png') ? "/themes/{$folderName}/screenshot.png" : null
+                ];
+            }
+        }
+
+        return $themes;
+    }
+
+    /**
      * Switch active theme without losing site content or existing theme option presets.
      */
     public function switchTheme(string $themeFolder): bool {
@@ -122,6 +150,23 @@ class ThemeEngine {
         ob_start();
         include $templatePath;
         return ob_get_clean();
+    }
+
+    /**
+     * Resolve public CSS/JS asset paths using parent-child fallback logic.
+     */
+    public function getAssetUrl(string $assetPath): string {
+        $assetPath = ltrim($assetPath, '/');
+
+        if (file_exists($this->themesDir . '/' . $this->activeTheme . '/' . $assetPath)) {
+            return "/themes/" . $this->activeTheme . '/' . $assetPath;
+        }
+
+        if ($this->parentTheme && file_exists($this->themesDir . '/' . $this->parentTheme . '/' . $assetPath)) {
+            return "/themes/" . $this->parentTheme . '/' . $assetPath;
+        }
+
+        return "/themes/blogbuster-default/" . $assetPath;
     }
 
     public function getActiveTheme(): string {
