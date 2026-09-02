@@ -55,19 +55,22 @@ if (empty($requestUri)) {
     $requestUri = '/';
 }
 
-// Administrative Route Handler for physical admin files
-if (strpos($requestUri, '/admin') === 0) {
-    $adminFile = __DIR__ . '/public' . $requestUri;
-    if (is_file($adminFile)) {
-        require $adminFile;
-        exit;
+// Support both /admin/... and /public/admin/... paths
+$cleanAdminUri = preg_replace('#^/public/admin#', '/admin', $requestUri);
+
+if (strpos($cleanAdminUri, '/admin') === 0) {
+    $subPath = ltrim(substr($cleanAdminUri, 6), '/');
+    if (empty($subPath) || $subPath === 'dashboard') {
+        $subPath = 'dashboard.php';
     }
-    if (is_file($adminFile . '.php')) {
-        require $adminFile . '.php';
-        exit;
+
+    $targetFile = __DIR__ . '/public/admin/' . $subPath;
+    if (!str_ends_with($targetFile, '.php') && !is_dir($targetFile)) {
+        $targetFile .= '.php';
     }
-    if ($requestUri === '/admin' || $requestUri === '/admin/dashboard') {
-        require __DIR__ . '/public/admin/dashboard.php';
+
+    if (is_file($targetFile)) {
+        require $targetFile;
         exit;
     }
 }
