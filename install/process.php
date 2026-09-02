@@ -32,22 +32,44 @@ function renderError($message) {
     echo "<!DOCTYPE html><html class='h-full bg-slate-900'><head><script src='https://cdn.tailwindcss.com'></script></head><body class='h-full flex items-center justify-center p-4'>";
     echo "<div class='max-w-md w-full bg-slate-800 border border-slate-700/60 rounded-2xl p-6 text-center space-y-4 shadow-2xl'>";
     echo "<div class='w-12 h-12 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-xl flex items-center justify-center mx-auto'><svg class='w-6 h-6' fill='none' stroke='currentColor' viewBox='0 0 24 24'><path stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z'></path></svg></div>";
-    echo "<h2 class='text-lg font-bold text-white'>Installation Failed</h2>";
+    echo "<h2 class='text-lg font-bold text-white'>Activation Failed</h2>";
     echo "<p class='text-slate-300 text-xs'>" . htmlspecialchars($message) . "</p>";
     echo "<a href='index.php' class='inline-block px-5 py-2.5 bg-slate-700 hover:bg-slate-600 text-white font-medium text-sm rounded-xl transition'>Try Again</a>";
     echo "</div></body></html>";
     exit();
 }
 
-// Stage 1 Verification Endpoint (Remote Check)
-if (!empty($appKey)) {
-    $ch = curl_init('https://manager.pmhserver.name.ng/api-docs.php');
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 5);
-    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-    $res = curl_exec($ch);
-    curl_close($ch);
-    // Ignore external offline status in sandbox envs to guarantee local installer success
+// Stage 1 Verification Endpoint (Remote Check against manager.pmhserver.name.ng/api.php)
+if (empty($appKey)) {
+    renderError("Product Key / Activation Token is required to complete installation.");
+}
+
+$domain = $_SERVER['HTTP_HOST'] ?? 'localhost';
+$endpoint = 'https://manager.pmhserver.name.ng/api.php';
+
+$ch = curl_init($endpoint);
+curl_setopt($ch, CURLOPT_POST, 1);
+curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query([
+    'key' => $appKey,
+    'domain' => $domain
+]));
+curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+
+$response = curl_exec($ch);
+$curlError = curl_error($ch);
+curl_close($ch);
+
+if ($response === false) {
+    renderError("Could not connect to Activation Server: " . $curlError);
+}
+
+$resData = json_decode($response, true);
+if (!isset($resData['status']) || (int)$resData['status'] !== 1) {
+    $msg = $resData['message'] ?? 'Invalid product key or unauthorized domain assignment.';
+    renderError("Key Verification Error: " . $msg);
 }
 
 if (!file_exists($schemaFile)) {
@@ -93,6 +115,7 @@ try {
     $optStmt = $pdo->prepare("INSERT INTO options (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)");
     $optStmt->execute(['site_title', 'BLOGBUSTER']);
     $optStmt->execute(['enable_pin_login', '1']);
+    $optStmt->execute(['app_activation_key', $appKey]);
 
     // 5. Create Config Directory & Write database.php
     if (!is_dir($configDir)) {
@@ -141,10 +164,14 @@ try {
         
         <div>
             <h1 class="text-xl font-bold text-white">Congratulations! Installation Complete</h1>
-            <p class="text-xs text-slate-400 mt-1">BLOGBUSTER is successfully configured and ready for live production.</p>
+            <p class="text-xs text-slate-400 mt-1">BLOGBUSTER is successfully activated, configured and ready for live production.</p>
         </div>
 
         <div class="p-4 rounded-xl bg-slate-900/80 border border-slate-700/40 text-left text-xs space-y-2">
+            <div class="flex items-center justify-between text-slate-300">
+                <span>Activation Status:</span>
+                <span class="font-bold text-emerald-400">Verified & Active</span>
+            </div>
             <div class="flex items-center justify-between text-slate-300">
                 <span>Database Migration:</span>
                 <span class="font-bold text-emerald-400">Successful (14 Tables)</span>
