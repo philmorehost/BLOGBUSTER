@@ -13,41 +13,79 @@ class WooCommerceEngine {
     }
 
     private function ensureTablesExist(): void {
-        $this->pdo->exec("
-            CREATE TABLE IF NOT EXISTS shop_products (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                title VARCHAR(255) NOT NULL,
-                slug VARCHAR(255) NOT NULL UNIQUE,
-                description TEXT,
-                price DECIMAL(10,2) NOT NULL,
-                sku VARCHAR(100) DEFAULT NULL,
-                stock_quantity INT DEFAULT 0,
-                image_url VARCHAR(500) DEFAULT NULL,
-                status VARCHAR(20) DEFAULT 'publish',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        $driver = $this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+        if ($driver === 'sqlite') {
+            $this->pdo->exec("
+                CREATE TABLE IF NOT EXISTS shop_products (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    slug TEXT NOT NULL UNIQUE,
+                    description TEXT,
+                    price REAL NOT NULL,
+                    sku TEXT DEFAULT NULL,
+                    stock_quantity INTEGER DEFAULT 0,
+                    image_url TEXT DEFAULT NULL,
+                    status TEXT DEFAULT 'publish',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
 
-            CREATE TABLE IF NOT EXISTS shop_orders (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                order_number VARCHAR(50) NOT NULL UNIQUE,
-                customer_name VARCHAR(255) NOT NULL,
-                customer_email VARCHAR(255) NOT NULL,
-                shipping_address TEXT NOT NULL,
-                total_amount DECIMAL(10,2) NOT NULL,
-                status VARCHAR(50) DEFAULT 'pending',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                CREATE TABLE IF NOT EXISTS shop_orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    order_number TEXT NOT NULL UNIQUE,
+                    customer_name TEXT NOT NULL,
+                    customer_email TEXT NOT NULL,
+                    shipping_address TEXT NOT NULL,
+                    total_amount REAL NOT NULL,
+                    status TEXT DEFAULT 'pending',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
 
-            CREATE TABLE IF NOT EXISTS shop_order_items (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                order_id INT NOT NULL,
-                product_id INT NOT NULL,
-                product_name VARCHAR(255) NOT NULL,
-                price DECIMAL(10,2) NOT NULL,
-                quantity INT NOT NULL,
-                FOREIGN KEY (order_id) REFERENCES shop_orders(id) ON DELETE CASCADE
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-        ");
+                CREATE TABLE IF NOT EXISTS shop_order_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    order_id INTEGER NOT NULL,
+                    product_id INTEGER NOT NULL,
+                    product_name TEXT NOT NULL,
+                    price REAL NOT NULL,
+                    quantity INTEGER NOT NULL
+                );
+            ");
+        } else {
+            $this->pdo->exec("
+                CREATE TABLE IF NOT EXISTS shop_products (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    title VARCHAR(255) NOT NULL,
+                    slug VARCHAR(255) NOT NULL UNIQUE,
+                    description TEXT,
+                    price DECIMAL(10,2) NOT NULL,
+                    sku VARCHAR(100) DEFAULT NULL,
+                    stock_quantity INT DEFAULT 0,
+                    image_url VARCHAR(500) DEFAULT NULL,
+                    status VARCHAR(20) DEFAULT 'publish',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+                CREATE TABLE IF NOT EXISTS shop_orders (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    order_number VARCHAR(50) NOT NULL UNIQUE,
+                    customer_name VARCHAR(255) NOT NULL,
+                    customer_email VARCHAR(255) NOT NULL,
+                    shipping_address TEXT NOT NULL,
+                    total_amount DECIMAL(10,2) NOT NULL,
+                    status VARCHAR(50) DEFAULT 'pending',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+                CREATE TABLE IF NOT EXISTS shop_order_items (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    order_id INT NOT NULL,
+                    product_id INT NOT NULL,
+                    product_name VARCHAR(255) NOT NULL,
+                    price DECIMAL(10,2) NOT NULL,
+                    quantity INT NOT NULL,
+                    FOREIGN KEY (order_id) REFERENCES shop_orders(id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            ");
+        }
     }
 
     public function getProducts(int $limit = 20, int $offset = 0): array {
@@ -81,13 +119,15 @@ class WooCommerceEngine {
             throw new Exception("Cannot process checkout with an empty cart.");
         }
 
+        $driver = $this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
         $this->pdo->beginTransaction();
         try {
             $totalAmount = 0;
             $itemsToInsert = [];
 
             foreach ($cartItems as $item) {
-                $stmt = $this->pdo->prepare("SELECT * FROM shop_products WHERE id = ? FOR UPDATE");
+                $forUpdateSql = ($driver === 'sqlite') ? "" : " FOR UPDATE";
+                $stmt = $this->pdo->prepare("SELECT * FROM shop_products WHERE id = ?" . $forUpdateSql);
                 $stmt->execute([$item['product_id']]);
                 $product = $stmt->fetch(PDO::FETCH_ASSOC);
 

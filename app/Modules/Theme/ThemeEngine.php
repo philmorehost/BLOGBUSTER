@@ -22,14 +22,26 @@ class ThemeEngine {
      * Ensure options and theme settings tables exist.
      */
     private function ensureSchemaExists(): void {
-        $this->pdo->exec("
-            CREATE TABLE IF NOT EXISTS options (
-                setting_key VARCHAR(100) PRIMARY KEY,
-                setting_value LONGTEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-        ");
+        $driver = $this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+        if ($driver === 'sqlite') {
+            $this->pdo->exec("
+                CREATE TABLE IF NOT EXISTS options (
+                    setting_key TEXT PRIMARY KEY,
+                    setting_value TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            ");
+        } else {
+            $this->pdo->exec("
+                CREATE TABLE IF NOT EXISTS options (
+                    setting_key VARCHAR(100) PRIMARY KEY,
+                    setting_value LONGTEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            ");
+        }
     }
 
     /**
@@ -48,34 +60,6 @@ class ThemeEngine {
     }
 
     /**
-     * Scan available themes in the themes directory.
-     */
-    public function getAvailableThemes(): array {
-        $themes = [];
-        $dirs = glob($this->themesDir . '/*', GLOB_ONLYDIR);
-
-        foreach ($dirs as $dir) {
-            $folderName = basename($dir);
-            $manifestFile = $dir . '/theme.json';
-            
-            if (file_exists($manifestFile)) {
-                $manifest = json_decode(file_get_contents($manifestFile), true) ?: [];
-                $themes[$folderName] = [
-                    'folder' => $folderName,
-                    'name' => $manifest['name'] ?? $folderName,
-                    'version' => $manifest['version'] ?? '1.0.0',
-                    'author' => $manifest['author'] ?? 'Unknown',
-                    'parent' => $manifest['parent'] ?? null,
-                    'is_active' => ($folderName === $this->activeTheme),
-                    'screenshot' => file_exists($dir . '/screenshot.png') ? "/themes/{$folderName}/screenshot.png" : null
-                ];
-            }
-        }
-
-        return $themes;
-    }
-
-    /**
      * Switch active theme without losing site content or existing theme option presets.
      */
     public function switchTheme(string $themeFolder): bool {
@@ -84,13 +68,18 @@ class ThemeEngine {
             throw new Exception("Theme '{$themeFolder}' is invalid or missing theme.json manifest.");
         }
 
-        // Update active theme option setting while leaving post database intact
-        $stmt = $this->pdo->prepare("
-            INSERT INTO options (setting_key, setting_value) 
-            VALUES ('active_theme', ?) 
-            ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)
-        ");
-        $stmt->execute([$themeFolder]);
+        $driver = $this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+        if ($driver === 'sqlite') {
+            $stmt = $this->pdo->prepare("INSERT OR REPLACE INTO options (setting_key, setting_value) VALUES ('active_theme', ?)");
+            $stmt->execute([$themeFolder]);
+        } else {
+            $stmt = $this->pdo->prepare("
+                INSERT INTO options (setting_key, setting_value)
+                VALUES ('active_theme', ?)
+                ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)
+            ");
+            $stmt->execute([$themeFolder]);
+        }
 
         $this->activeTheme = $themeFolder;
         $this->loadActiveThemeConfig();
@@ -98,10 +87,7 @@ class ThemeEngine {
     }
 
     /**
-     * Resolve template location using Parent-Child Override Hierarchy:
-     * 1. Active Theme (Child Theme directory)
-     * 2. Parent Theme directory (if active theme defines a parent)
-     * 3. Default Core Fallback
+     * Resolve template location using Parent-Child Override Hierarchy
      */
     public function resolveTemplate(string $templateName): string {
         $templateName = ltrim($templateName, '/');
@@ -129,9 +115,6 @@ class ThemeEngine {
         throw new Exception("Template '{$templateName}' could not be resolved in child, parent, or default theme directories.");
     }
 
-    /**
-     * Render a template view passing custom variable scope.
-     */
     public function render(string $templateName, array $data = []): string {
         $templatePath = $this->resolveTemplate($templateName);
         extract($data);
@@ -139,25 +122,6 @@ class ThemeEngine {
         ob_start();
         include $templatePath;
         return ob_get_clean();
-    }
-
-    /**
-     * Resolve public CSS/JS asset paths using parent-child fallback logic.
-     */
-    public function getAssetUrl(string $assetPath): string {
-        $assetPath = ltrim($assetPath, '/');
-
-        // Check child theme asset
-        if (file_exists($this->themesDir . '/' . $this->activeTheme . '/' . $assetPath)) {
-            return "/themes/" . $this->activeTheme . '/' . $assetPath;
-        }
-
-        // Check parent theme asset
-        if ($this->parentTheme && file_exists($this->themesDir . '/' . $this->parentTheme . '/' . $assetPath)) {
-            return "/themes/" . $this->parentTheme . '/' . $assetPath;
-        }
-
-        return "/themes/blogbuster-default/" . $assetPath;
     }
 
     public function getActiveTheme(): string {

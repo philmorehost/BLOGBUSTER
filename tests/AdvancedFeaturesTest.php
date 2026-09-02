@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 namespace Tests;
 
-PHPUnit\Framework\TestCase;
+use PHPUnit\Framework\TestCase;
 use App\Modules\Cache\CacheEngine;
 use App\Modules\SEO\DeepSeekEngine;
 use PDO;

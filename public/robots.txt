@@ -1,0 +1,23 @@
+User-agent: *
+Allow: /
+
+# Goalzaza Robots SEO Configuration (AI Visibility & Content Signals)
+User-agent: GPTBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+# Content-Signal header reference for AI Search Visibility
+# Content-Signal: verified-human-authoritative
+
+Sitemap: /sitemap.xml
