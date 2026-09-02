@@ -1,15 +1,18 @@
--- 1. Users Table
+-- 1. Users Table (Updated with security PIN and lock fields)
 CREATE TABLE IF NOT EXISTS `users` (
     `id` INT AUTO_INCREMENT PRIMARY KEY,
     `username` VARCHAR(50) NOT NULL UNIQUE,
     `email` VARCHAR(100) NOT NULL UNIQUE,
     `password_hash` VARCHAR(255) NOT NULL,
+    `security_pin` VARCHAR(255) DEFAULT NULL,
     `role` ENUM('admin', 'editor', 'author', 'subscriber') DEFAULT 'author',
     `status` ENUM('active', 'inactive', 'suspended') DEFAULT 'active',
     `job_title` VARCHAR(100) DEFAULT NULL,
     `avatar` VARCHAR(255) DEFAULT NULL,
     `bio` TEXT DEFAULT NULL,
     `social_urls` TEXT DEFAULT NULL,
+    `failed_login_attempts` INT DEFAULT 0,
+    `locked_until` DATETIME NULL,
     `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -50,7 +53,7 @@ CREATE TABLE IF NOT EXISTS `posts` (
     INDEX `idx_status_publish` (`status`, `publish_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- 5. Tags Table (ADDITION 1)
+-- 5. Tags Table
 CREATE TABLE IF NOT EXISTS `tags` (
     `id` INT AUTO_INCREMENT PRIMARY KEY,
     `name` VARCHAR(50) NOT NULL,
@@ -58,7 +61,7 @@ CREATE TABLE IF NOT EXISTS `tags` (
     `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- 6. Post-Tag Pivot Table (ADDITION 2)
+-- 6. Post-Tag Pivot Table
 CREATE TABLE IF NOT EXISTS `post_tags` (
     `post_id` INT NOT NULL,
     `tag_id` INT NOT NULL,
@@ -143,7 +146,7 @@ CREATE TABLE IF NOT EXISTS `licenses` (
     `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- 13. Package Builds Audit Table (ADDITION 3 - For PackageBuilderService)
+-- 13. Package Builds Audit Table
 CREATE TABLE IF NOT EXISTS `package_builds` (
     `id` INT AUTO_INCREMENT PRIMARY KEY,
     `version` VARCHAR(20) NOT NULL,
@@ -154,7 +157,7 @@ CREATE TABLE IF NOT EXISTS `package_builds` (
     `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- 14. Server Logs Table (ADDITION 4 - For ServerManagerService)
+-- 14. Server Logs Table
 CREATE TABLE IF NOT EXISTS `server_logs` (
     `id` INT AUTO_INCREMENT PRIMARY KEY,
     `action` VARCHAR(100) NOT NULL,
