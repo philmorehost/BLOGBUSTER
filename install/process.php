@@ -1,4 +1,8 @@
 <?php
+// Increase execution timeout and memory for migration
+set_time_limit(300);
+ini_set('memory_limit', '256M');
+
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     header('Location: index.php');
     exit();
@@ -35,17 +39,37 @@ if (!file_exists($schemaFile)) {
 try {
     // 1. Establish MySQL PDO Connection
     $pdo = new PDO("mysql:host={$dbHost};dbname={$dbName};charset=utf8mb4", $dbUser, $dbPass, [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_TIMEOUT => 30
     ]);
 
-    // 2. Read and Import Full Schema
-    $sql = file_get_contents($schemaFile);
-    $pdo->exec($sql);
+    // 2. Read schema.sql and split into individual queries to prevent 503 timeouts
+    $rawSql = file_get_contents($schemaFile);
+    
+    // Remove comments
+    $rawSql = preg_replace('/--.*$/m', '', $rawSql);
+    $rawSql = preg_replace('/\/\*.*?\*\//s', '', $rawSql);
 
-    // 3. Create Administrator User Account
+    // Split queries by semicolon
+    $queries = array_filter(array_map('trim', explode(';', $rawSql)));
+
+    // Run each query individually
+    foreach ($queries as $query) {
+        if (!empty($query)) {
+            $pdo->exec($query);
+        }
+    }
+
+    // 3. Create Administrator User Account (Check if user exists first to prevent duplicate key error)
     $passwordHash = password_hash($adminPass, PASSWORD_BCRYPT);
-    $stmt = $pdo->prepare("INSERT INTO users (username, email, password_hash, role, status) VALUES (?, ?, ?, 'admin', 'active')");
-    $stmt->execute([$adminUser, $adminEmail, $passwordHash]);
+    
+    $checkUser = $pdo->prepare("SELECT id FROM users WHERE email = ? OR username = ?");
+    $checkUser->execute([$adminEmail, $adminUser]);
+    
+    if ($checkUser->rowCount() === 0) {
+        $stmt = $pdo->prepare("INSERT INTO users (username, email, password_hash, role, status) VALUES (?, ?, ?, 'admin', 'active')");
+        $stmt->execute([$adminUser, $adminEmail, $passwordHash]);
+    }
 
     // 4. Create App Config Directory
     if (!is_dir($configDir)) {
@@ -96,8 +120,8 @@ try {
 
         <div class="p-4 rounded-xl bg-slate-900/80 border border-slate-700/40 text-left text-xs space-y-2">
             <div class="flex items-center justify-between text-slate-300">
-                <span>Database Tables:</span>
-                <span class="font-bold text-emerald-400">14 Migrated</span>
+                <span>Database Status:</span>
+                <span class="font-bold text-emerald-400">Tables Migrated</span>
             </div>
             <div class="flex items-center justify-between text-slate-300">
                 <span>Admin Username:</span>
