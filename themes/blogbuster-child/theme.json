@@ -1,0 +1,11 @@
+{
+  "name": "BLOGBUSTER Custom Child Theme",
+  "version": "1.0.0",
+  "author": "In-House Engineering",
+  "description": "Customized child theme inheriting parent templates while supplying layout overrides.",
+  "parent": "blogbuster-default",
+  "overrides": [
+    "single.php",
+    "header.php"
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "BLOGBUSTER Core Default",
+  "version": "1.0.0",
+  "author": "BLOGBUSTER Core Team",
+  "description": "Standard high-performance parent theme layout engine.",
+  "parent": null,
+  "templates": {
+    "home": "index.php",
+    "post": "single.php",
+    "page": "page.php"
+  }
+}
