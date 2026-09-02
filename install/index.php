@@ -125,8 +125,8 @@ $allPassed = !in_array(false, array_column($requirements, 'passed'), true);
 
                 <div class="pt-2">
                     <label class="block text-xs font-medium text-slate-300 mb-1.5">System Product Key / Activation Token</label>
-                    <input type="text" name="app_key" id="app_key" required placeholder="XXXX-XXXX-XXXX-XXXX" value="BB-PRO-8899-VALID" class="w-full px-3.5 py-2.5 bg-slate-900/80 border border-slate-700/60 rounded-xl text-slate-100 text-sm focus:outline-none focus:border-blue-500 transition">
-                    <p class="text-[11px] text-slate-400 mt-1">Verified via pmhserver management endpoint.</p>
+                    <input type="text" name="app_key" id="app_key" required placeholder="Enter valid key from manager.pmhserver.name.ng" class="w-full px-3.5 py-2.5 bg-slate-900/80 border border-slate-700/60 rounded-xl text-slate-100 text-sm focus:outline-none focus:border-blue-500 transition">
+                    <p class="text-[11px] text-slate-400 mt-1">Obtain a valid activation key from manager.pmhserver.name.ng to proceed.</p>
                 </div>
 
                 <div class="pt-4 flex justify-end">

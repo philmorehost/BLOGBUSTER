@@ -3,6 +3,8 @@
  * BLOGBUSTER Production Database Connection & Schema Auto-Migrator
  */
 
+$pdo = null;
+
 $configPath = __DIR__ . '/../../config/database.php';
 $config = [];
 if (file_exists($configPath)) {
