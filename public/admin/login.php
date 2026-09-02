@@ -6,7 +6,7 @@ if (isset($_SESSION['user_id'])) {
 }
 
 // Updated database connection file path
-require_once __DIR__ . '/../../app/Config/db.php';
+require_once __DIR__ . '/../../app/Config/database.php';
 
 // Fetch settings
 $opts = [];
