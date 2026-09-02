@@ -5,7 +5,8 @@ if (isset($_SESSION['user_id'])) {
     exit();
 }
 
-require_once __DIR__ . '/../../app/Config/database.php';
+// Updated database connection file path
+require_once __DIR__ . '/../../app/Config/db.php';
 
 // Fetch settings
 $opts = [];
@@ -28,11 +29,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $user = $stmt->fetch();
 
         if ($user) {
+            $lockedUntil = $user['locked_until'] ?? null;
+            $failedAttempts = (int)($user['failed_login_attempts'] ?? 0);
+            $userPin = $user['security_pin'] ?? null;
+
             // Check Brute Force Lockout
-            if ($user['locked_until'] && strtotime($user['locked_until']) > time()) {
+            if ($lockedUntil && strtotime($lockedUntil) > time()) {
                 $error = 'Account locked due to multiple failed attempts. Please use your Security PIN to recover or unlock.';
             } else {
-                $pinValid = !$enablePinLogin || password_verify($enteredPin, $user['security_pin']);
+                // Verify Security PIN if enabled
+                $pinValid = !$enablePinLogin || ($userPin && password_verify($enteredPin, $userPin));
 
                 if (password_verify($password, $user['password_hash']) && $pinValid) {
                     // Reset failed attempts on success
@@ -46,7 +52,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     exit();
                 } else {
                     // Increment failed attempts
-                    $attempts = $user['failed_login_attempts'] + 1;
+                    $attempts = $failedAttempts + 1;
                     $lockoutQuery = "";
                     if ($attempts >= 5) {
                         $lockoutQuery = ", locked_until = DATE_ADD(NOW(), INTERVAL 15 MINUTE)";
@@ -79,21 +85,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <p class="text-xs text-slate-400">Sign in with credentials and security PIN</p>
         </div>
 
-        <?php if ($error): ?><div class="p-3 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-xl text-xs text-center"><?= $error; ?></div><?php endif; ?>
+        <?php if ($error): ?>
+            <div class="p-3 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-xl text-xs text-center">
+                <?= htmlspecialchars($error); ?>
+            </div>
+        <?php endif; ?>
 
         <form method="POST" class="space-y-4">
             <div>
                 <label class="block text-xs font-medium text-slate-300 mb-1">Username or Email</label>
-                <input type="text" name="username" required class="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-sm text-white">
+                <input type="text" name="username" required class="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-sm text-white focus:outline-none focus:border-blue-500 transition">
             </div>
             <div>
                 <label class="block text-xs font-medium text-slate-300 mb-1">Password</label>
-                <input type="password" name="password" required class="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-sm text-white">
+                <input type="password" name="password" required class="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-sm text-white focus:outline-none focus:border-blue-500 transition">
             </div>
             <?php if ($enablePinLogin): ?>
                 <div>
                     <label class="block text-xs font-medium text-slate-300 mb-1">Permanent Security PIN</label>
-                    <input type="password" name="security_pin" maxlength="6" required class="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-sm text-white">
+                    <input type="password" name="security_pin" maxlength="6" required class="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-sm text-white focus:outline-none focus:border-blue-500 transition">
                 </div>
             <?php endif; ?>
             <button type="submit" class="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-medium text-sm rounded-xl transition">Sign In</button>
