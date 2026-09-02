@@ -27,6 +27,12 @@ if (file_exists(__DIR__ . '/../vendor/autoload.php')) {
     });
 }
 
+// Redirect to installer if lock file missing
+if (!file_exists(__DIR__ . '/../config/installed.lock')) {
+    header("Location: /install/");
+    exit;
+}
+
 // Global Exception Handler for Production Safety
 set_exception_handler(function (Throwable $e) {
     error_log($e->getMessage() . "\n" . $e->getTraceAsString());
@@ -35,15 +41,35 @@ set_exception_handler(function (Throwable $e) {
 });
 
 // Database Connection Factory
-$config = require __DIR__ . '/../config/database.php';
-$dsn = "mysql:host={$config['host']};port={$config['port']};dbname={$config['db']};charset={$config['charset']}";
-$pdo = new PDO($dsn, $config['user'], $config['pass'], $config['options']);
+$pdo = require __DIR__ . '/../app/Config/database.php';
+
+// Security Check: Brute Force & IP Shield
+require_once __DIR__ . '/../app/Security/Shield.php';
+$shield = new \App\Security\Shield($pdo);
+$shield->inspectRequest();
 
 // Parse Request URI
 $requestUri = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
 $requestUri = rtrim($requestUri, '/');
 if (empty($requestUri)) {
     $requestUri = '/';
+}
+
+// Administrative Route Handler for physical admin files
+if (strpos($requestUri, '/admin') === 0) {
+    $adminFile = __DIR__ . str_replace('/admin', '/admin', $requestUri);
+    if (is_file($adminFile)) {
+        require $adminFile;
+        exit;
+    }
+    if (is_file($adminFile . '.php')) {
+        require $adminFile . '.php';
+        exit;
+    }
+    if ($requestUri === '/admin' || $requestUri === '/admin/dashboard') {
+        require __DIR__ . '/admin/dashboard.php';
+        exit;
+    }
 }
 
 // Initialize Engines
@@ -80,8 +106,8 @@ if ($requestUri === '/sitemap.xml') {
 if ($requestUri === '/') {
     $headTags = $seoEngine->renderHeadTags();
     
-    // Fetch recent published posts
-    $stmt = $pdo->query("SELECT * FROM posts ORDER BY id DESC LIMIT 10");
+    // Fetch recent published posts (using user_id column)
+    $stmt = $pdo->query("SELECT p.*, u.username as author_name FROM posts p LEFT JOIN users u ON p.user_id = u.id ORDER BY p.id DESC LIMIT 10");
     $posts = $stmt->fetchAll();
 
     echo $themeEngine->render('index.php', [
@@ -140,12 +166,11 @@ if (preg_match('#^/author/([a-zA-Z0-9_-]+)$#', $requestUri, $matches)) {
 }
 
 // Route 5: Single Post / Custom Page Slug Matching
-$stmt = $pdo->prepare("SELECT * FROM posts WHERE slug = ?");
+$stmt = $pdo->prepare("SELECT p.*, u.username as author_name FROM posts p LEFT JOIN users u ON p.user_id = u.id WHERE p.slug = ?");
 $stmt->execute([ltrim($requestUri, '/')]);
 $post = $stmt->fetch();
 
 if ($post) {
-    // Fetch post author for E-E-A-T metadata
     $author = null;
     if (!empty($post['user_id'])) {
         $authStmt = $pdo->prepare("SELECT * FROM users WHERE id = ?");

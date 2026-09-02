@@ -2,3 +2,4 @@
 /storage/cache/
 /storage/logs/
 /config/installed.lock
+.phpunit.cache/
