@@ -13,22 +13,41 @@ class WPFormsEngine {
     }
 
     private function ensureTablesExist(): void {
-        $this->pdo->exec("
-            CREATE TABLE IF NOT EXISTS wp_forms (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                title VARCHAR(255) NOT NULL,
-                form_fields JSON NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        $driver = $this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+        if ($driver === 'sqlite') {
+            $this->pdo->exec("
+                CREATE TABLE IF NOT EXISTS wp_forms (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    form_fields TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
 
-            CREATE TABLE IF NOT EXISTS wp_form_entries (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                form_id INT NOT NULL,
-                entry_data JSON NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (form_id) REFERENCES wp_forms(id) ON DELETE CASCADE
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-        ");
+                CREATE TABLE IF NOT EXISTS wp_form_entries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    form_id INTEGER NOT NULL,
+                    entry_data TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            ");
+        } else {
+            $this->pdo->exec("
+                CREATE TABLE IF NOT EXISTS wp_forms (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    title VARCHAR(255) NOT NULL,
+                    form_fields JSON NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+                CREATE TABLE IF NOT EXISTS wp_form_entries (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    form_id INT NOT NULL,
+                    entry_data JSON NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (form_id) REFERENCES wp_forms(id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            ");
+        }
     }
 
     public function createForm(string $title, array $fields): int {

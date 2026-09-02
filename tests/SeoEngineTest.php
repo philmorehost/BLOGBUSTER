@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 namespace Tests;
 
-PHPUnit\Framework\TestCase;
+use PHPUnit\Framework\TestCase;
 use App\Modules\SEO\SeoEngine;
 use PDO;
 
@@ -62,6 +62,6 @@ final class SeoEngineTest extends TestCase {
         $this->assertStringContainsString('"name": "ebenezer"', $html);
         $this->assertStringContainsString('"jobTitle": "Principal Architect"', $html);
         $this->assertStringContainsString('"sameAs": [', $html);
-        $this->assertStringContainsString('"https:\/\/twitter.com\/ebenezer"', $html);
+        $this->assertStringContainsString('"https://twitter.com/ebenezer"', $html);
     }
 }
