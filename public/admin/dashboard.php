@@ -11,18 +11,31 @@ require_once __DIR__ . '/../../app/Modules/Theme/ThemeEngine.php';
 require_once __DIR__ . '/../../app/Modules/Addons/WPFormsEngine.php';
 require_once __DIR__ . '/../../app/Modules/Addons/WooCommerceEngine.php';
 require_once __DIR__ . '/../../app/Modules/SEO/SitemapGenerator.php';
+require_once __DIR__ . '/../../app/Modules/Performance/ImageOptimizer.php';
 
 use App\Modules\Theme\ThemeEngine;
 use App\Modules\Addons\WPFormsEngine;
 use App\Modules\Addons\WooCommerceEngine;
 use App\Modules\SEO\SitemapGenerator;
+use App\Modules\Performance\ImageOptimizer;
 
 $themeEngine = new ThemeEngine($pdo, __DIR__ . '/../../themes');
 $wpFormsEngine = new WPFormsEngine($pdo);
 $wooEngine = new WooCommerceEngine($pdo);
+$imageOptimizer = new ImageOptimizer();
 
 $msg = '';
 $activeTab = $_GET['tab'] ?? 'dashboard';
+
+// Helper: 30-word excerpt generator
+function generate30WordExcerpt(string $text): string {
+    $cleanText = strip_tags($text);
+    $words = preg_split('/\s+/', $cleanText);
+    if (count($words) <= 30) {
+        return implode(' ', $words);
+    }
+    return implode(' ', array_slice($words, 0, 30)) . '...';
+}
 
 // Handle All POST Actions Across Modules
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -56,24 +69,84 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $msg = "Security Shield policy updated!";
     }
 
-    // Publish New Post
-    if ($action === 'create_post') {
+    // Publish or Update Post
+    if ($action === 'save_post') {
+        $postId = (int)($_POST['post_id'] ?? 0);
         $title = trim($_POST['title'] ?? '');
         $content = trim($_POST['content'] ?? '');
         $category = trim($_POST['category'] ?? 'General');
+
         $excerpt = trim($_POST['excerpt'] ?? '');
-        $seoTitle = trim($_POST['seo_title'] ?? $title);
-        $seoDesc = trim($_POST['seo_desc'] ?? '');
+        if (empty($excerpt)) {
+            $excerpt = generate30WordExcerpt($content);
+        }
+
+        $imageWebp = null;
+        if (!empty($_FILES['featured_image']['tmp_name'])) {
+            $uploadDir = __DIR__ . '/../uploads/';
+            if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
+
+            $filename = time() . '_' . preg_replace('/[^a-zA-Z0-9]/', '', pathinfo($_FILES['featured_image']['name'], PATHINFO_FILENAME));
+            $destination = $uploadDir . $filename . '.webp';
+
+            if ($imageOptimizer->convertToWebp($_FILES['featured_image']['tmp_name'], $destination)) {
+                $imageWebp = '/uploads/' . $filename . '.webp';
+
+                // Track in media library
+                $mStmt = $pdo->prepare("INSERT INTO media (user_id, filename, file_path, file_type, file_size, alt_text) VALUES (?, ?, ?, 'image/webp', ?, ?)");
+                $mStmt->execute([$_SESSION['user_id'], $filename . '.webp', $imageWebp, $_FILES['featured_image']['size'], $title]);
+            }
+        }
+
         $slug = preg_replace('/[^a-z0-9-]+/', '-', strtolower($title));
 
-        $stmt = $pdo->prepare("INSERT INTO posts (user_id, title, slug, content, excerpt, status) VALUES (?, ?, ?, ?, ?, 'published')");
-        $stmt->execute([$_SESSION['user_id'], $title, $slug, $content, $excerpt]);
+        if ($postId > 0) {
+            if ($imageWebp) {
+                $stmt = $pdo->prepare("UPDATE posts SET title = ?, slug = ?, content = ?, excerpt = ?, image_webp = ? WHERE id = ?");
+                $stmt->execute([$title, $slug, $content, $excerpt, $imageWebp, $postId]);
+            } else {
+                $stmt = $pdo->prepare("UPDATE posts SET title = ?, slug = ?, content = ?, excerpt = ? WHERE id = ?");
+                $stmt->execute([$title, $slug, $content, $excerpt, $postId]);
+            }
+            $msg = "Article '{$title}' updated successfully!";
+        } else {
+            $stmt = $pdo->prepare("INSERT INTO posts (user_id, title, slug, content, excerpt, image_webp, status) VALUES (?, ?, ?, ?, ?, ?, 'published')");
+            $stmt->execute([$_SESSION['user_id'], $title, $slug, $content, $excerpt, $imageWebp]);
+            $msg = "Article '{$title}' published successfully!";
+        }
 
         // Auto-regenerate Sitemap
         $sitemapGen = new SitemapGenerator($pdo);
         $sitemapGen->renderSitemapXml();
+    }
 
-        $msg = "Post '{$title}' published and sitemap updated!";
+    // Batch Delete Selected Posts
+    if ($action === 'batch_delete_posts') {
+        $selectedPosts = $_POST['selected_posts'] ?? [];
+        if (!empty($selectedPosts)) {
+            $placeholders = implode(',', array_fill(0, count($selectedPosts), '?'));
+            $stmt = $pdo->prepare("DELETE FROM posts WHERE id IN ($placeholders)");
+            $stmt->execute($selectedPosts);
+            $msg = count($selectedPosts) . " articles deleted successfully!";
+        }
+    }
+
+    // Direct Media WebP Upload
+    if ($action === 'upload_media') {
+        if (!empty($_FILES['media_file']['tmp_name'])) {
+            $uploadDir = __DIR__ . '/../uploads/';
+            if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
+
+            $filename = time() . '_' . preg_replace('/[^a-zA-Z0-9]/', '', pathinfo($_FILES['media_file']['name'], PATHINFO_FILENAME));
+            $destination = $uploadDir . $filename . '.webp';
+
+            if ($imageOptimizer->convertToWebp($_FILES['media_file']['tmp_name'], $destination)) {
+                $imageWebp = '/uploads/' . $filename . '.webp';
+                $mStmt = $pdo->prepare("INSERT INTO media (user_id, filename, file_path, file_type, file_size, alt_text) VALUES (?, ?, ?, 'image/webp', ?, ?)");
+                $mStmt->execute([$_SESSION['user_id'], $filename . '.webp', $imageWebp, $_FILES['media_file']['size'], $_POST['alt_text'] ?? 'Uploaded Media']);
+                $msg = "Image converted to WebP and added to Media Library!";
+            }
+        }
     }
 
     // Save Form Builder Form
@@ -91,11 +164,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Save Store Product
     if ($action === 'create_product') {
         try {
+            $imageUrl = null;
+            if (!empty($_FILES['product_image']['tmp_name'])) {
+                $uploadDir = __DIR__ . '/../uploads/';
+                if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
+
+                $filename = 'prod_' . time() . '_' . preg_replace('/[^a-zA-Z0-9]/', '', pathinfo($_FILES['product_image']['name'], PATHINFO_FILENAME));
+                $destination = $uploadDir . $filename . '.webp';
+
+                if ($imageOptimizer->convertToWebp($_FILES['product_image']['tmp_name'], $destination)) {
+                    $imageUrl = '/uploads/' . $filename . '.webp';
+                }
+            }
+
             $wooEngine->createProduct([
                 'title' => $_POST['title'],
                 'price' => $_POST['price'],
                 'description' => $_POST['description'],
-                'stock_quantity' => $_POST['stock']
+                'stock_quantity' => $_POST['stock'],
+                'image_url' => $imageUrl
             ]);
             $msg = "Store product '{$_POST['title']}' created!";
         } catch (Exception $e) {
@@ -103,31 +190,59 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    // Save Site Settings & Profile
+    // Save System Settings & Admin Profile & Logo/Favicon
     if ($action === 'save_settings') {
+        $logoPath = null;
+        $faviconPath = null;
+
+        if (!empty($_FILES['logo_image']['tmp_name'])) {
+            $uploadDir = __DIR__ . '/../uploads/';
+            if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
+            $filename = 'logo_' . time();
+            if ($imageOptimizer->convertToWebp($_FILES['logo_image']['tmp_name'], $uploadDir . $filename . '.webp')) {
+                $logoPath = '/uploads/' . $filename . '.webp';
+            }
+        }
+
+        if (!empty($_FILES['favicon_image']['tmp_name'])) {
+            $uploadDir = __DIR__ . '/../uploads/';
+            if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
+            $filename = 'favicon_' . time();
+            if ($imageOptimizer->convertToWebp($_FILES['favicon_image']['tmp_name'], $uploadDir . $filename . '.webp')) {
+                $faviconPath = '/uploads/' . $filename . '.webp';
+            }
+        }
+
         $settings = [
             'site_title'     => trim($_POST['site_title'] ?? 'BLOGBUSTER'),
             'site_tagline'   => trim($_POST['site_tagline'] ?? ''),
+            'payhub_secret'  => trim($_POST['payhub_secret'] ?? ''),
+            'payhub_public'  => trim($_POST['payhub_public'] ?? ''),
             'smtp_host'      => trim($_POST['smtp_host'] ?? ''),
             'smtp_port'      => trim($_POST['smtp_port'] ?? '587'),
             'smtp_user'      => trim($_POST['smtp_user'] ?? ''),
             'smtp_pass'      => trim($_POST['smtp_pass'] ?? ''),
             'smtp_from_email'=> trim($_POST['smtp_from_email'] ?? '')
         ];
+
+        if ($logoPath) $settings['site_logo'] = $logoPath;
+        if ($faviconPath) $settings['site_favicon'] = $faviconPath;
+
         $stmt = $pdo->prepare("INSERT INTO options (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)");
         foreach ($settings as $k => $v) {
             $stmt->execute([$k, $v]);
         }
 
-        // Handle Profile Updates
+        // Handle Admin Profile & Security PIN Updates
         if (!empty($_POST['admin_email'])) {
-            $pStmt = $pdo->prepare("UPDATE users SET email = ?, job_title = ?, bio = ? WHERE id = ?");
-            $pStmt->execute([
-                trim($_POST['admin_email']),
-                trim($_POST['job_title'] ?? ''),
-                trim($_POST['bio'] ?? ''),
-                $_SESSION['user_id']
-            ]);
+            $pinHash = !empty($_POST['security_pin']) ? password_hash($_POST['security_pin'], PASSWORD_BCRYPT) : null;
+            if ($pinHash) {
+                $pStmt = $pdo->prepare("UPDATE users SET email = ?, job_title = ?, bio = ?, security_pin = ? WHERE id = ?");
+                $pStmt->execute([trim($_POST['admin_email']), trim($_POST['job_title'] ?? ''), trim($_POST['bio'] ?? ''), $pinHash, $_SESSION['user_id']]);
+            } else {
+                $pStmt = $pdo->prepare("UPDATE users SET email = ?, job_title = ?, bio = ? WHERE id = ?");
+                $pStmt->execute([trim($_POST['admin_email']), trim($_POST['job_title'] ?? ''), trim($_POST['bio'] ?? ''), $_SESSION['user_id']]);
+            }
         }
 
         $msg = "System settings & Admin Profile saved successfully!";
@@ -135,7 +250,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // Purge Cache
     if ($action === 'purge_cache') {
-        $msg = "WP Fastest Cache Manager: Page and Asset cache purged successfully!";
+        $msg = "Cache Manager: Page and Asset cache purged successfully!";
     }
 }
 
@@ -147,12 +262,20 @@ $blockedIps = $pdo->query("SELECT COUNT(*) FROM sec_blocked_ips WHERE blocked_un
 $whitelistedIps = $pdo->query("SELECT COUNT(*) FROM sec_whitelisted_ips")->fetchColumn() ?: 0;
 
 $logs = $pdo->query("SELECT * FROM sec_login_logs ORDER BY attempted_at DESC LIMIT 15")->fetchAll() ?: [];
-$posts = $pdo->query("SELECT * FROM posts ORDER BY id DESC LIMIT 10")->fetchAll() ?: [];
+$posts = $pdo->query("SELECT * FROM posts ORDER BY id DESC")->fetchAll() ?: [];
+$mediaItems = $pdo->query("SELECT * FROM media ORDER BY id DESC")->fetchAll() ?: [];
 $availableThemes = $themeEngine->getAvailableThemes();
-$products = $wooEngine->getProducts(10);
+$products = $wooEngine->getProducts(20);
 $userProfile = $pdo->query("SELECT * FROM users WHERE id = " . (int)$_SESSION['user_id'])->fetch() ?: [];
 
-// Settings options
+// Post Edit Fetch
+$editPost = null;
+if (isset($_GET['edit_post'])) {
+    $eStmt = $pdo->prepare("SELECT * FROM posts WHERE id = ?");
+    $eStmt->execute([(int)$_GET['edit_post']]);
+    $editPost = $eStmt->fetch();
+}
+
 $optRows = $pdo->query("SELECT setting_key, setting_value FROM options")->fetchAll(PDO::FETCH_KEY_PAIR) ?: [];
 ?>
 <!DOCTYPE html>
@@ -163,8 +286,10 @@ $optRows = $pdo->query("SELECT setting_key, setting_value FROM options")->fetchA
     <title>BLOGBUSTER — Admin Control Panel</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- CKEditor 5 CDN -->
+    <script src="https://cdn.ckeditor.com/ckeditor5/39.0.1/classic/ckeditor.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <style>body { font-family: 'Inter', sans-serif; }</style>
+    <style>body { font-family: 'Inter', sans-serif; } .ck-editor__editable_inline { min-height: 250px; color: #000; }</style>
 </head>
 <body class="h-full flex overflow-hidden">
 
@@ -354,139 +479,118 @@ $optRows = $pdo->query("SELECT setting_key, setting_value FROM options")->fetchA
                     </div>
                 </div>
 
-            <?php elseif ($activeTab === 'themes'): ?>
-                <div class="space-y-6">
-                    <div>
-                        <h3 class="text-base font-bold text-white">Theme Selection & Child Theme Manager</h3>
-                        <p class="text-xs text-slate-400">Select active theme or save custom child theme variations without losing existing posts or media.</p>
-                    </div>
-
-                    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-                        <?php foreach ($availableThemes as $folder => $theme): ?>
-                            <div class="p-6 bg-slate-900 border <?= $theme['is_active'] ? 'border-blue-500' : 'border-slate-800'; ?> rounded-2xl space-y-4 relative flex flex-col justify-between">
-                                <?php if ($theme['is_active']): ?>
-                                    <span class="absolute top-4 right-4 text-[10px] font-bold px-2.5 py-1 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20">Active Theme</span>
-                                <?php endif; ?>
-                                <div>
-                                    <h4 class="text-lg font-bold text-white"><?= htmlspecialchars($theme['name']); ?></h4>
-                                    <p class="text-xs text-slate-400 mt-1"><?= htmlspecialchars($theme['author']); ?> (v<?= $theme['version']; ?>)</p>
-                                </div>
-                                <form method="POST">
-                                    <input type="hidden" name="admin_action" value="switch_theme">
-                                    <input type="hidden" name="theme_folder" value="<?= htmlspecialchars($folder); ?>">
-                                    <button type="submit" <?= $theme['is_active'] ? 'disabled' : ''; ?> class="w-full py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-xl text-xs font-semibold transition">
-                                        <?= $theme['is_active'] ? 'Currently Active' : 'Activate Theme'; ?>
-                                    </button>
-                                </form>
-                            </div>
-                        <?php endforeach; ?>
-                    </div>
-                </div>
-
-            <?php elseif ($activeTab === 'security'): ?>
+            <?php elseif ($activeTab === 'posts'): ?>
                 <div class="space-y-8">
-                    <form method="POST" class="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-4 max-w-2xl">
-                        <input type="hidden" name="admin_action" value="save_security">
-                        <h3 class="text-base font-bold text-white">Security Plugin (Anti-Brute Force Throttling & Lockout Rules)</h3>
+                    <!-- Advanced Article Publisher Form -->
+                    <form method="POST" enctype="multipart/form-data" class="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-4">
+                        <input type="hidden" name="admin_action" value="save_post">
+                        <input type="hidden" name="post_id" value="<?= $editPost['id'] ?? 0; ?>">
+                        <h3 class="text-base font-bold text-white"><?= $editPost ? 'Edit Article' : 'Publish Advanced News Post'; ?></h3>
+
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
-                                <label class="block text-xs font-medium text-slate-300 mb-1">Max Account Failures</label>
-                                <input type="number" name="max_account_failures" value="5" class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
+                                <label class="block text-xs font-medium text-slate-300 mb-1">Post Title</label>
+                                <input type="text" name="title" value="<?= htmlspecialchars($editPost['title'] ?? ''); ?>" required class="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
                             </div>
                             <div>
-                                <label class="block text-xs font-medium text-slate-300 mb-1">Max IP Failures</label>
-                                <input type="number" name="max_ip_failures" value="5" class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
+                                <label class="block text-xs font-medium text-slate-300 mb-1">Category</label>
+                                <input type="text" name="category" value="<?= htmlspecialchars($editPost['category'] ?? 'News'); ?>" required class="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
                             </div>
                         </div>
-                        <button type="submit" class="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-semibold transition">Save Security Policy</button>
+
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1">Featured Image (Auto-Converted to WebP)</label>
+                            <input type="file" name="featured_image" accept="image/*" class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-300">
+                        </div>
+
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1">Article Body (CKEditor 5 Enhanced)</label>
+                            <textarea name="content" id="editor" rows="6" class="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white"><?= htmlspecialchars($editPost['content'] ?? ''); ?></textarea>
+                        </div>
+
+                        <button type="submit" class="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-semibold transition">
+                            <?= $editPost ? 'Update Post' : 'Publish Post & Auto-Generate 30-Word Excerpt'; ?>
+                        </button>
                     </form>
 
-                    <!-- Audit Log Table -->
-                    <div class="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-4">
-                        <h3 class="text-base font-bold text-white">cPHulk / Imunify360 Login Audit Trail</h3>
+                    <!-- Article List & Batch Delete -->
+                    <form method="POST" class="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-4">
+                        <input type="hidden" name="admin_action" value="batch_delete_posts">
+                        <div class="flex items-center justify-between">
+                            <h3 class="text-base font-bold text-white">Existing Published Articles</h3>
+                            <button type="submit" onclick="return confirm('Delete selected articles?');" class="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold rounded-xl transition">
+                                Delete Selected Articles
+                            </button>
+                        </div>
+
                         <div class="overflow-x-auto">
                             <table class="w-full text-left text-xs text-slate-300">
                                 <thead class="bg-slate-950 text-slate-400 uppercase">
                                     <tr>
-                                        <th class="p-3">IP Address</th>
-                                        <th class="p-3">Username</th>
-                                        <th class="p-3">Status</th>
-                                        <th class="p-3">Attempted At</th>
+                                        <th class="p-3"><input type="checkbox" id="select-all"></th>
+                                        <th class="p-3">Title</th>
+                                        <th class="p-3">30-Word Auto Excerpt</th>
+                                        <th class="p-3">Created At</th>
+                                        <th class="p-3">Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody class="divide-y divide-slate-800">
-                                    <?php foreach ($logs as $log): ?>
+                                    <?php foreach ($posts as $post): ?>
                                         <tr>
-                                            <td class="p-3 font-mono"><?= htmlspecialchars($log['ip_address']); ?></td>
-                                            <td class="p-3 font-semibold text-white"><?= htmlspecialchars($log['username']); ?></td>
+                                            <td class="p-3"><input type="checkbox" name="selected_posts[]" value="<?= $post['id']; ?>" class="post-checkbox"></td>
+                                            <td class="p-3 font-semibold text-white"><?= htmlspecialchars($post['title']); ?></td>
+                                            <td class="p-3 text-slate-400"><?= htmlspecialchars($post['excerpt'] ?: generate30WordExcerpt($post['content'])); ?></td>
+                                            <td class="p-3 text-slate-400"><?= $post['created_at']; ?></td>
                                             <td class="p-3">
-                                                <span class="px-2 py-0.5 rounded text-[10px] font-bold <?= $log['status'] === 'success' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'; ?>">
-                                                    <?= strtoupper($log['status']); ?>
-                                                </span>
+                                                <a href="dashboard?tab=posts&edit_post=<?= $post['id']; ?>" class="text-blue-400 hover:underline">Edit</a>
                                             </td>
-                                            <td class="p-3 text-slate-400"><?= $log['attempted_at']; ?></td>
                                         </tr>
                                     <?php endforeach; ?>
                                 </tbody>
                             </table>
                         </div>
+                    </form>
+                </div>
+                <script>
+                    ClassicEditor.create(document.querySelector('#editor')).catch(error => console.error(error));
+                    document.getElementById('select-all')?.addEventListener('change', function() {
+                        document.querySelectorAll('.post-checkbox').forEach(cb => cb.checked = this.checked);
+                    });
+                </script>
+
+            <?php elseif ($activeTab === 'media'): ?>
+                <div class="space-y-6">
+                    <form method="POST" enctype="multipart/form-data" class="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-4 max-w-xl">
+                        <input type="hidden" name="admin_action" value="upload_media">
+                        <h3 class="text-base font-bold text-white">Upload Media & Auto-Convert to WebP</h3>
+                        <div>
+                            <input type="file" name="media_file" accept="image/*" required class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-300">
+                        </div>
+                        <div>
+                            <input type="text" name="alt_text" placeholder="Image Alt Text for SEO" class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
+                        </div>
+                        <button type="submit" class="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-semibold transition">Upload & Compress WebP</button>
+                    </form>
+
+                    <!-- Gallery Grid -->
+                    <div class="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-4">
+                        <h3 class="text-base font-bold text-white">Uploaded Images Gallery</h3>
+                        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                            <?php foreach ($mediaItems as $media): ?>
+                                <div class="bg-slate-950 border border-slate-800 p-3 rounded-xl space-y-2">
+                                    <div class="h-28 bg-slate-900 rounded-lg overflow-hidden flex items-center justify-center">
+                                        <img src="<?= htmlspecialchars($media['file_path']); ?>" alt="<?= htmlspecialchars($media['alt_text']); ?>" class="max-h-full object-cover">
+                                    </div>
+                                    <div class="text-[10px] text-slate-400 truncate"><?= htmlspecialchars($media['filename']); ?></div>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
                     </div>
-                </div>
-
-            <?php elseif ($activeTab === 'posts'): ?>
-                <div class="space-y-6">
-                    <form method="POST" class="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-4 max-w-2xl">
-                        <input type="hidden" name="admin_action" value="create_post">
-                        <h3 class="text-base font-bold text-white">Publish Advanced News Post</h3>
-                        <div class="grid grid-cols-2 gap-4">
-                            <div>
-                                <label class="block text-xs font-medium text-slate-300 mb-1">Post Title</label>
-                                <input type="text" name="title" required class="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
-                            </div>
-                            <div>
-                                <label class="block text-xs font-medium text-slate-300 mb-1">Category</label>
-                                <input type="text" name="category" value="News" required class="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
-                            </div>
-                        </div>
-                        <div>
-                            <label class="block text-xs font-medium text-slate-300 mb-1">Excerpt</label>
-                            <input type="text" name="excerpt" placeholder="Short article summary for search engines" class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
-                        </div>
-                        <div>
-                            <label class="block text-xs font-medium text-slate-300 mb-1">Article Body (HTML Supported)</label>
-                            <textarea name="content" rows="4" required class="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white"></textarea>
-                        </div>
-                        <button type="submit" class="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-semibold transition">Publish Post & Update Sitemap</button>
-                    </form>
-                </div>
-
-            <?php elseif ($activeTab === 'wpforms'): ?>
-                <div class="space-y-6">
-                    <form method="POST" class="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-4 max-w-2xl">
-                        <input type="hidden" name="admin_action" value="create_form">
-                        <h3 class="text-base font-bold text-white">Form Builder Plugin</h3>
-                        <div>
-                            <label class="block text-xs font-medium text-slate-300 mb-1">Form Name / Title</label>
-                            <input type="text" name="form_title" placeholder="Contact Form" required class="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
-                        </div>
-                        <p class="text-xs text-slate-400">Creates a responsive form with Name, Email, and Message fields. Copy the shortcode `[form id=X]` into Page Builder or Posts.</p>
-                        <button type="submit" class="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold transition">Create Form & Generate Shortcode</button>
-                    </form>
-                </div>
-
-            <?php elseif ($activeTab === 'cache'): ?>
-                <div class="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-4 max-w-2xl">
-                    <h3 class="text-base font-bold text-white">Cache Manager Plugin</h3>
-                    <p class="text-xs text-slate-400">High-speed file caching engine. Purges static HTML snapshots and CSS/JS minification files.</p>
-                    <form method="POST">
-                        <input type="hidden" name="admin_action" value="purge_cache">
-                        <button type="submit" class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold transition">Purge All Page & Asset Cache</button>
-                    </form>
                 </div>
 
             <?php elseif ($activeTab === 'woocommerce'): ?>
                 <div class="space-y-6">
-                    <form method="POST" class="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-4 max-w-2xl">
+                    <form method="POST" enctype="multipart/form-data" class="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-4 max-w-2xl">
                         <input type="hidden" name="admin_action" value="create_product">
                         <h3 class="text-base font-bold text-white">Store Plugin (E-Commerce Manager)</h3>
                         <div class="grid grid-cols-2 gap-4">
@@ -500,6 +604,10 @@ $optRows = $pdo->query("SELECT setting_key, setting_value FROM options")->fetchA
                             </div>
                         </div>
                         <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1">Product Image (WebP Auto-Conversion)</label>
+                            <input type="file" name="product_image" accept="image/*" class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-300">
+                        </div>
+                        <div>
                             <label class="block text-xs font-medium text-slate-300 mb-1">Stock Quantity</label>
                             <input type="number" name="stock" value="10" required class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
                         </div>
@@ -509,11 +617,11 @@ $optRows = $pdo->query("SELECT setting_key, setting_value FROM options")->fetchA
 
             <?php elseif ($activeTab === 'settings'): ?>
                 <div class="space-y-6">
-                    <form method="POST" class="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-6 max-w-3xl">
+                    <form method="POST" enctype="multipart/form-data" class="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-6 max-w-3xl">
                         <input type="hidden" name="admin_action" value="save_settings">
 
                         <div class="space-y-4">
-                            <h3 class="text-base font-bold text-white border-b border-slate-800 pb-2">Site Configuration</h3>
+                            <h3 class="text-base font-bold text-white border-b border-slate-800 pb-2">Site Identity & WebP Branding Uploads</h3>
                             <div class="grid grid-cols-2 gap-4">
                                 <div>
                                     <label class="block text-xs font-medium text-slate-300 mb-1">Site Title</label>
@@ -523,45 +631,41 @@ $optRows = $pdo->query("SELECT setting_key, setting_value FROM options")->fetchA
                                     <label class="block text-xs font-medium text-slate-300 mb-1">Site Tagline</label>
                                     <input type="text" name="site_tagline" value="<?= htmlspecialchars($optRows['site_tagline'] ?? 'Modern CMS'); ?>" class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
                                 </div>
+                                <div>
+                                    <label class="block text-xs font-medium text-slate-300 mb-1">Upload Site Logo (WebP Auto-Convert)</label>
+                                    <input type="file" name="logo_image" accept="image/*" class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-300">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-medium text-slate-300 mb-1">Upload Custom Favicon (WebP Auto-Convert)</label>
+                                    <input type="file" name="favicon_image" accept="image/*" class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-300">
+                                </div>
                             </div>
                         </div>
 
                         <div class="space-y-4">
-                            <h3 class="text-base font-bold text-white border-b border-slate-800 pb-2">Admin Profile & E-E-A-T Author Bio</h3>
+                            <h3 class="text-base font-bold text-white border-b border-slate-800 pb-2">Payhub Gateway Integration (https://merchant.payhub.com.ng)</h3>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-xs font-medium text-slate-300 mb-1">Payhub Secret Key</label>
+                                    <input type="password" name="payhub_secret" value="<?= htmlspecialchars($optRows['payhub_secret'] ?? ''); ?>" placeholder="sec_live_XXXXX" class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-medium text-slate-300 mb-1">Payhub Public Key</label>
+                                    <input type="text" name="payhub_public" value="<?= htmlspecialchars($optRows['payhub_public'] ?? ''); ?>" placeholder="pub_live_XXXXX" class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="space-y-4">
+                            <h3 class="text-base font-bold text-white border-b border-slate-800 pb-2">Admin Profile & Security PIN</h3>
                             <div class="grid grid-cols-2 gap-4">
                                 <div>
                                     <label class="block text-xs font-medium text-slate-300 mb-1">Admin Email</label>
                                     <input type="email" name="admin_email" value="<?= htmlspecialchars($userProfile['email'] ?? 'admin@example.com'); ?>" class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
                                 </div>
                                 <div>
-                                    <label class="block text-xs font-medium text-slate-300 mb-1">Job Title</label>
-                                    <input type="text" name="job_title" value="<?= htmlspecialchars($userProfile['job_title'] ?? 'Principal Editor'); ?>" class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
-                                </div>
-                            </div>
-                            <div>
-                                <label class="block text-xs font-medium text-slate-300 mb-1">Author Bio (for E-E-A-T Schema)</label>
-                                <textarea name="bio" rows="2" class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white"><?= htmlspecialchars($userProfile['bio'] ?? ''); ?></textarea>
-                            </div>
-                        </div>
-
-                        <div class="space-y-4">
-                            <h3 class="text-base font-bold text-white border-b border-slate-800 pb-2">SMTP Server Settings</h3>
-                            <div class="grid grid-cols-2 gap-4">
-                                <div>
-                                    <label class="block text-xs font-medium text-slate-300 mb-1">SMTP Host</label>
-                                    <input type="text" name="smtp_host" value="<?= htmlspecialchars($optRows['smtp_host'] ?? ''); ?>" class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
-                                </div>
-                                <div>
-                                    <label class="block text-xs font-medium text-slate-300 mb-1">SMTP Port</label>
-                                    <input type="text" name="smtp_port" value="<?= htmlspecialchars($optRows['smtp_port'] ?? '587'); ?>" class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
-                                </div>
-                                <div>
-                                    <label class="block text-xs font-medium text-slate-300 mb-1">SMTP User</label>
-                                    <input type="text" name="smtp_user" value="<?= htmlspecialchars($optRows['smtp_user'] ?? ''); ?>" class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
-                                </div>
-                                <div>
-                                    <label class="block text-xs font-medium text-slate-300 mb-1">SMTP Password</label>
-                                    <input type="password" name="smtp_pass" value="<?= htmlspecialchars($optRows['smtp_pass'] ?? ''); ?>" class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
+                                    <label class="block text-xs font-medium text-slate-300 mb-1">Permanent Security PIN (6 Digits)</label>
+                                    <input type="password" name="security_pin" maxlength="6" placeholder="••••••" class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
                                 </div>
                             </div>
                         </div>
