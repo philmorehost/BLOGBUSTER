@@ -126,7 +126,7 @@ if ($requestUri === '/') {
 if (preg_match('#^/category/([a-zA-Z0-9-]+)$#', $requestUri, $matches)) {
     $categorySlug = $matches[1];
     
-    $stmt = $pdo->prepare("SELECT * FROM posts WHERE category_slug = ? ORDER BY id DESC");
+    $stmt = $pdo->prepare("SELECT p.*, u.username as author_name FROM posts p LEFT JOIN users u ON p.user_id = u.id LEFT JOIN categories c ON p.category_id = c.id WHERE c.slug = ? ORDER BY p.id DESC");
     $stmt->execute([$categorySlug]);
     $posts = $stmt->fetchAll();
 

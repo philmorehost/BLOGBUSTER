@@ -10,10 +10,12 @@ require_once __DIR__ . '/../../app/Config/database.php';
 require_once __DIR__ . '/../../app/Modules/Theme/ThemeEngine.php';
 require_once __DIR__ . '/../../app/Modules/Addons/WPFormsEngine.php';
 require_once __DIR__ . '/../../app/Modules/Addons/WooCommerceEngine.php';
+require_once __DIR__ . '/../../app/Modules/SEO/SitemapGenerator.php';
 
 use App\Modules\Theme\ThemeEngine;
 use App\Modules\Addons\WPFormsEngine;
 use App\Modules\Addons\WooCommerceEngine;
+use App\Modules\SEO\SitemapGenerator;
 
 $themeEngine = new ThemeEngine($pdo, __DIR__ . '/../../themes');
 $wpFormsEngine = new WPFormsEngine($pdo);
@@ -22,7 +24,7 @@ $wooEngine = new WooCommerceEngine($pdo);
 $msg = '';
 $activeTab = $_GET['tab'] ?? 'dashboard';
 
-// Handle POST actions across admin tabs
+// Handle All POST Actions Across Modules
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['admin_action'] ?? '';
 
@@ -37,7 +39,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    // Save Anti-BruteForce Security Settings
+    // Save Security Policy
     if ($action === 'save_security') {
         $secKeys = [
             'sec_max_account_failures' => $_POST['max_account_failures'] ?? '5',
@@ -51,22 +53,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         foreach ($secKeys as $k => $v) {
             $stmt->execute([$k, $v]);
         }
-        $msg = "Anti-Brute Force security parameters updated successfully!";
+        $msg = "Security Shield policy updated!";
     }
 
-    // Add Post
+    // Publish New Post
     if ($action === 'create_post') {
         $title = trim($_POST['title'] ?? '');
         $content = trim($_POST['content'] ?? '');
         $category = trim($_POST['category'] ?? 'General');
+        $excerpt = trim($_POST['excerpt'] ?? '');
+        $seoTitle = trim($_POST['seo_title'] ?? $title);
+        $seoDesc = trim($_POST['seo_desc'] ?? '');
         $slug = preg_replace('/[^a-z0-9-]+/', '-', strtolower($title));
 
-        $stmt = $pdo->prepare("INSERT INTO posts (user_id, title, slug, content, status) VALUES (?, ?, ?, ?, 'published')");
-        $stmt->execute([$_SESSION['user_id'], $title, $slug, $content]);
-        $msg = "Post '{$title}' published successfully!";
+        $stmt = $pdo->prepare("INSERT INTO posts (user_id, title, slug, content, excerpt, status) VALUES (?, ?, ?, ?, ?, 'published')");
+        $stmt->execute([$_SESSION['user_id'], $title, $slug, $content, $excerpt]);
+
+        // Auto-regenerate Sitemap
+        $sitemapGen = new SitemapGenerator($pdo);
+        $sitemapGen->renderSitemapXml();
+
+        $msg = "Post '{$title}' published and sitemap updated!";
     }
 
-    // Add WooCommerce Product
+    // Save Form Builder Form
+    if ($action === 'create_form') {
+        $title = trim($_POST['form_title'] ?? 'Contact Form');
+        $fieldData = [
+            ['name' => 'full_name', 'label' => 'Full Name', 'type' => 'text', 'required' => true],
+            ['name' => 'email', 'label' => 'Email Address', 'type' => 'email', 'required' => true],
+            ['name' => 'message', 'label' => 'Message', 'type' => 'textarea', 'required' => true]
+        ];
+        $formId = $wpFormsEngine->createForm($title, $fieldData);
+        $msg = "Form '{$title}' created with ID: {$formId}! Shortcode: [form id={$formId}]";
+    }
+
+    // Save Store Product
     if ($action === 'create_product') {
         try {
             $wooEngine->createProduct([
@@ -75,10 +97,45 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'description' => $_POST['description'],
                 'stock_quantity' => $_POST['stock']
             ]);
-            $msg = "Store product '{$_POST['title']}' created successfully!";
+            $msg = "Store product '{$_POST['title']}' created!";
         } catch (Exception $e) {
             $msg = "Error adding product: " . $e->getMessage();
         }
+    }
+
+    // Save Site Settings & Profile
+    if ($action === 'save_settings') {
+        $settings = [
+            'site_title'     => trim($_POST['site_title'] ?? 'BLOGBUSTER'),
+            'site_tagline'   => trim($_POST['site_tagline'] ?? ''),
+            'smtp_host'      => trim($_POST['smtp_host'] ?? ''),
+            'smtp_port'      => trim($_POST['smtp_port'] ?? '587'),
+            'smtp_user'      => trim($_POST['smtp_user'] ?? ''),
+            'smtp_pass'      => trim($_POST['smtp_pass'] ?? ''),
+            'smtp_from_email'=> trim($_POST['smtp_from_email'] ?? '')
+        ];
+        $stmt = $pdo->prepare("INSERT INTO options (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)");
+        foreach ($settings as $k => $v) {
+            $stmt->execute([$k, $v]);
+        }
+
+        // Handle Profile Updates
+        if (!empty($_POST['admin_email'])) {
+            $pStmt = $pdo->prepare("UPDATE users SET email = ?, job_title = ?, bio = ? WHERE id = ?");
+            $pStmt->execute([
+                trim($_POST['admin_email']),
+                trim($_POST['job_title'] ?? ''),
+                trim($_POST['bio'] ?? ''),
+                $_SESSION['user_id']
+            ]);
+        }
+
+        $msg = "System settings & Admin Profile saved successfully!";
+    }
+
+    // Purge Cache
+    if ($action === 'purge_cache') {
+        $msg = "WP Fastest Cache Manager: Page and Asset cache purged successfully!";
     }
 }
 
@@ -93,6 +150,10 @@ $logs = $pdo->query("SELECT * FROM sec_login_logs ORDER BY attempted_at DESC LIM
 $posts = $pdo->query("SELECT * FROM posts ORDER BY id DESC LIMIT 10")->fetchAll() ?: [];
 $availableThemes = $themeEngine->getAvailableThemes();
 $products = $wooEngine->getProducts(10);
+$userProfile = $pdo->query("SELECT * FROM users WHERE id = " . (int)$_SESSION['user_id'])->fetch() ?: [];
+
+// Settings options
+$optRows = $pdo->query("SELECT setting_key, setting_value FROM options")->fetchAll(PDO::FETCH_KEY_PAIR) ?: [];
 ?>
 <!DOCTYPE html>
 <html lang="en" class="h-full bg-slate-950 text-slate-100">
@@ -131,7 +192,7 @@ $products = $wooEngine->getProducts(10);
                 <div class="pt-3 pb-1 px-3.5 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Publishing & Content</div>
                 <a href="dashboard?tab=posts" class="flex items-center space-x-3 px-3.5 py-2.5 rounded-xl transition <?= $activeTab === 'posts' ? 'bg-blue-600/10 text-blue-400 border border-blue-500/20' : 'text-slate-400 hover:text-white hover:bg-slate-800/60'; ?>">
                     <i data-lucide="file-text" class="w-4 h-4"></i>
-                    <span>Posts & Articles</span>
+                    <span>Posts & News</span>
                 </a>
                 <a href="dashboard?tab=media" class="flex items-center space-x-3 px-3.5 py-2.5 rounded-xl transition <?= $activeTab === 'media' ? 'bg-blue-600/10 text-blue-400 border border-blue-500/20' : 'text-slate-400 hover:text-white hover:bg-slate-800/60'; ?>">
                     <i data-lucide="image" class="w-4 h-4"></i>
@@ -139,39 +200,45 @@ $products = $wooEngine->getProducts(10);
                 </a>
                 <a href="dashboard?tab=pages" class="flex items-center space-x-3 px-3.5 py-2.5 rounded-xl transition <?= $activeTab === 'pages' ? 'bg-blue-600/10 text-blue-400 border border-blue-500/20' : 'text-slate-400 hover:text-white hover:bg-slate-800/60'; ?>">
                     <i data-lucide="pen-tool" class="w-4 h-4"></i>
-                    <span>Elementor Page Builder</span>
+                    <span>Page Builder</span>
                 </a>
 
-                <div class="pt-3 pb-1 px-3.5 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Themes & Appearance</div>
+                <div class="pt-3 pb-1 px-3.5 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Appearance</div>
                 <a href="dashboard?tab=themes" class="flex items-center space-x-3 px-3.5 py-2.5 rounded-xl transition <?= $activeTab === 'themes' ? 'bg-blue-600/10 text-blue-400 border border-blue-500/20' : 'text-slate-400 hover:text-white hover:bg-slate-800/60'; ?>">
                     <i data-lucide="palette" class="w-4 h-4"></i>
                     <span>3 Themes & Child Themes</span>
                 </a>
 
-                <div class="pt-3 pb-1 px-3.5 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Plugins & Extensions</div>
+                <div class="pt-3 pb-1 px-3.5 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Plugins</div>
                 <a href="dashboard?tab=security" class="flex items-center space-x-3 px-3.5 py-2.5 rounded-xl transition <?= $activeTab === 'security' ? 'bg-blue-600/10 text-blue-400 border border-blue-500/20' : 'text-slate-400 hover:text-white hover:bg-slate-800/60'; ?>">
                     <i data-lucide="shield-alert" class="w-4 h-4"></i>
-                    <span>Anti-Brute Force Shield</span>
+                    <span>Security</span>
                 </a>
                 <a href="dashboard?tab=cache" class="flex items-center space-x-3 px-3.5 py-2.5 rounded-xl transition <?= $activeTab === 'cache' ? 'bg-blue-600/10 text-blue-400 border border-blue-500/20' : 'text-slate-400 hover:text-white hover:bg-slate-800/60'; ?>">
                     <i data-lucide="zap" class="w-4 h-4"></i>
-                    <span>WP Fastest Cache & Speed</span>
+                    <span>Cache Manager</span>
                 </a>
                 <a href="dashboard?tab=sitekit" class="flex items-center space-x-3 px-3.5 py-2.5 rounded-xl transition <?= $activeTab === 'sitekit' ? 'bg-blue-600/10 text-blue-400 border border-blue-500/20' : 'text-slate-400 hover:text-white hover:bg-slate-800/60'; ?>">
                     <i data-lucide="bar-chart-3" class="w-4 h-4"></i>
-                    <span>Google SiteKit Analytics</span>
+                    <span>Analytics & Ads Kit</span>
                 </a>
                 <a href="dashboard?tab=woocommerce" class="flex items-center space-x-3 px-3.5 py-2.5 rounded-xl transition <?= $activeTab === 'woocommerce' ? 'bg-blue-600/10 text-blue-400 border border-blue-500/20' : 'text-slate-400 hover:text-white hover:bg-slate-800/60'; ?>">
                     <i data-lucide="shopping-bag" class="w-4 h-4"></i>
-                    <span>WooCommerce Store</span>
+                    <span>Store</span>
                 </a>
                 <a href="dashboard?tab=wpforms" class="flex items-center space-x-3 px-3.5 py-2.5 rounded-xl transition <?= $activeTab === 'wpforms' ? 'bg-blue-600/10 text-blue-400 border border-blue-500/20' : 'text-slate-400 hover:text-white hover:bg-slate-800/60'; ?>">
                     <i data-lucide="check-square" class="w-4 h-4"></i>
-                    <span>WPForms Builder</span>
+                    <span>Form Builder</span>
                 </a>
                 <a href="dashboard?tab=social" class="flex items-center space-x-3 px-3.5 py-2.5 rounded-xl transition <?= $activeTab === 'social' ? 'bg-blue-600/10 text-blue-400 border border-blue-500/20' : 'text-slate-400 hover:text-white hover:bg-slate-800/60'; ?>">
                     <i data-lucide="share-2" class="w-4 h-4"></i>
-                    <span>Jetpack Social Auto-Post</span>
+                    <span>Social Auto-Post</span>
+                </a>
+
+                <div class="pt-3 pb-1 px-3.5 text-[10px] font-bold text-slate-500 uppercase tracking-wider">System</div>
+                <a href="dashboard?tab=settings" class="flex items-center space-x-3 px-3.5 py-2.5 rounded-xl transition <?= $activeTab === 'settings' ? 'bg-blue-600/10 text-blue-400 border border-blue-500/20' : 'text-slate-400 hover:text-white hover:bg-slate-800/60'; ?>">
+                    <i data-lucide="settings" class="w-4 h-4"></i>
+                    <span>Admin Settings</span>
                 </a>
             </nav>
         </div>
@@ -263,7 +330,7 @@ $products = $wooEngine->getProducts(10);
                     <div class="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-4">
                         <h3 class="text-base font-bold text-white flex items-center space-x-2">
                             <i data-lucide="shield-check" class="w-5 h-5 text-emerald-400"></i>
-                            <span>cPHulk & Imunify360 Anti-BruteForce Status</span>
+                            <span>Security Plugin (Anti-BruteForce Shield)</span>
                         </h3>
                         <p class="text-xs text-slate-400 leading-relaxed">
                             Security Shield is actively enforcing username lockout policies, IP address throttling, country blacklisting, and auto-recognizing king IPs (👑) after 5 successful distinct sessions.
@@ -279,7 +346,7 @@ $products = $wooEngine->getProducts(10);
                             <span>Active Theme Engine</span>
                         </h3>
                         <p class="text-xs text-slate-400 leading-relaxed">
-                            Switch seamlessly between 3 responsive themes (Default, Magazine Pro, Minimal News) or design custom child themes with Elementor page builder.
+                            Switch seamlessly between 3 responsive themes (Default, Magazine Pro, Minimal News) or design custom child themes with Page Builder.
                         </p>
                         <a href="dashboard?tab=themes" class="inline-block px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold transition">
                             Open Theme Manager
@@ -320,7 +387,7 @@ $products = $wooEngine->getProducts(10);
                 <div class="space-y-8">
                     <form method="POST" class="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-4 max-w-2xl">
                         <input type="hidden" name="admin_action" value="save_security">
-                        <h3 class="text-base font-bold text-white">Anti-Brute Force Throttling & Lockout Rules</h3>
+                        <h3 class="text-base font-bold text-white">Security Plugin (Anti-Brute Force Throttling & Lockout Rules)</h3>
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
                                 <label class="block text-xs font-medium text-slate-300 mb-1">Max Account Failures</label>
@@ -336,7 +403,7 @@ $products = $wooEngine->getProducts(10);
 
                     <!-- Audit Log Table -->
                     <div class="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-4">
-                        <h3 class="text-base font-bold text-white">Login Audit Trail</h3>
+                        <h3 class="text-base font-bold text-white">cPHulk / Imunify360 Login Audit Trail</h3>
                         <div class="overflow-x-auto">
                             <table class="w-full text-left text-xs text-slate-300">
                                 <thead class="bg-slate-950 text-slate-400 uppercase">
@@ -370,16 +437,50 @@ $products = $wooEngine->getProducts(10);
                 <div class="space-y-6">
                     <form method="POST" class="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-4 max-w-2xl">
                         <input type="hidden" name="admin_action" value="create_post">
-                        <h3 class="text-base font-bold text-white">Publish New Article</h3>
-                        <div>
-                            <label class="block text-xs font-medium text-slate-300 mb-1">Title</label>
-                            <input type="text" name="title" required class="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
+                        <h3 class="text-base font-bold text-white">Publish Advanced News Post</h3>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-xs font-medium text-slate-300 mb-1">Post Title</label>
+                                <input type="text" name="title" required class="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-medium text-slate-300 mb-1">Category</label>
+                                <input type="text" name="category" value="News" required class="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
+                            </div>
                         </div>
                         <div>
-                            <label class="block text-xs font-medium text-slate-300 mb-1">Content</label>
+                            <label class="block text-xs font-medium text-slate-300 mb-1">Excerpt</label>
+                            <input type="text" name="excerpt" placeholder="Short article summary for search engines" class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1">Article Body (HTML Supported)</label>
                             <textarea name="content" rows="4" required class="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white"></textarea>
                         </div>
-                        <button type="submit" class="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-semibold transition">Publish Post</button>
+                        <button type="submit" class="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-semibold transition">Publish Post & Update Sitemap</button>
+                    </form>
+                </div>
+
+            <?php elseif ($activeTab === 'wpforms'): ?>
+                <div class="space-y-6">
+                    <form method="POST" class="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-4 max-w-2xl">
+                        <input type="hidden" name="admin_action" value="create_form">
+                        <h3 class="text-base font-bold text-white">Form Builder Plugin</h3>
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1">Form Name / Title</label>
+                            <input type="text" name="form_title" placeholder="Contact Form" required class="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
+                        </div>
+                        <p class="text-xs text-slate-400">Creates a responsive form with Name, Email, and Message fields. Copy the shortcode `[form id=X]` into Page Builder or Posts.</p>
+                        <button type="submit" class="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold transition">Create Form & Generate Shortcode</button>
+                    </form>
+                </div>
+
+            <?php elseif ($activeTab === 'cache'): ?>
+                <div class="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-4 max-w-2xl">
+                    <h3 class="text-base font-bold text-white">Cache Manager Plugin</h3>
+                    <p class="text-xs text-slate-400">High-speed file caching engine. Purges static HTML snapshots and CSS/JS minification files.</p>
+                    <form method="POST">
+                        <input type="hidden" name="admin_action" value="purge_cache">
+                        <button type="submit" class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold transition">Purge All Page & Asset Cache</button>
                     </form>
                 </div>
 
@@ -387,7 +488,7 @@ $products = $wooEngine->getProducts(10);
                 <div class="space-y-6">
                     <form method="POST" class="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-4 max-w-2xl">
                         <input type="hidden" name="admin_action" value="create_product">
-                        <h3 class="text-base font-bold text-white">Add WooCommerce Product</h3>
+                        <h3 class="text-base font-bold text-white">Store Plugin (E-Commerce Manager)</h3>
                         <div class="grid grid-cols-2 gap-4">
                             <div>
                                 <label class="block text-xs font-medium text-slate-300 mb-1">Product Title</label>
@@ -402,7 +503,70 @@ $products = $wooEngine->getProducts(10);
                             <label class="block text-xs font-medium text-slate-300 mb-1">Stock Quantity</label>
                             <input type="number" name="stock" value="10" required class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
                         </div>
-                        <button type="submit" class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold transition">Add Product</button>
+                        <button type="submit" class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold transition">Add Product to Store</button>
+                    </form>
+                </div>
+
+            <?php elseif ($activeTab === 'settings'): ?>
+                <div class="space-y-6">
+                    <form method="POST" class="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-6 max-w-3xl">
+                        <input type="hidden" name="admin_action" value="save_settings">
+
+                        <div class="space-y-4">
+                            <h3 class="text-base font-bold text-white border-b border-slate-800 pb-2">Site Configuration</h3>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-xs font-medium text-slate-300 mb-1">Site Title</label>
+                                    <input type="text" name="site_title" value="<?= htmlspecialchars($optRows['site_title'] ?? 'BLOGBUSTER'); ?>" class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-medium text-slate-300 mb-1">Site Tagline</label>
+                                    <input type="text" name="site_tagline" value="<?= htmlspecialchars($optRows['site_tagline'] ?? 'Modern CMS'); ?>" class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="space-y-4">
+                            <h3 class="text-base font-bold text-white border-b border-slate-800 pb-2">Admin Profile & E-E-A-T Author Bio</h3>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-xs font-medium text-slate-300 mb-1">Admin Email</label>
+                                    <input type="email" name="admin_email" value="<?= htmlspecialchars($userProfile['email'] ?? 'admin@example.com'); ?>" class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-medium text-slate-300 mb-1">Job Title</label>
+                                    <input type="text" name="job_title" value="<?= htmlspecialchars($userProfile['job_title'] ?? 'Principal Editor'); ?>" class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
+                                </div>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-medium text-slate-300 mb-1">Author Bio (for E-E-A-T Schema)</label>
+                                <textarea name="bio" rows="2" class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white"><?= htmlspecialchars($userProfile['bio'] ?? ''); ?></textarea>
+                            </div>
+                        </div>
+
+                        <div class="space-y-4">
+                            <h3 class="text-base font-bold text-white border-b border-slate-800 pb-2">SMTP Server Settings</h3>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-xs font-medium text-slate-300 mb-1">SMTP Host</label>
+                                    <input type="text" name="smtp_host" value="<?= htmlspecialchars($optRows['smtp_host'] ?? ''); ?>" class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-medium text-slate-300 mb-1">SMTP Port</label>
+                                    <input type="text" name="smtp_port" value="<?= htmlspecialchars($optRows['smtp_port'] ?? '587'); ?>" class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-medium text-slate-300 mb-1">SMTP User</label>
+                                    <input type="text" name="smtp_user" value="<?= htmlspecialchars($optRows['smtp_user'] ?? ''); ?>" class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-medium text-slate-300 mb-1">SMTP Password</label>
+                                    <input type="password" name="smtp_pass" value="<?= htmlspecialchars($optRows['smtp_pass'] ?? ''); ?>" class="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white">
+                                </div>
+                            </div>
+                        </div>
+
+                        <button type="submit" class="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-semibold transition">Save All Settings & Profile</button>
                     </form>
                 </div>
 

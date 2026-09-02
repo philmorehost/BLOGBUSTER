@@ -55,19 +55,22 @@ if (empty($requestUri)) {
     $requestUri = '/';
 }
 
-// Administrative Route Handler for physical admin files
-if (strpos($requestUri, '/admin') === 0) {
-    $adminFile = __DIR__ . str_replace('/admin', '/admin', $requestUri);
-    if (is_file($adminFile)) {
-        require $adminFile;
-        exit;
+// Support both /admin/... and /public/admin/... paths
+$cleanAdminUri = preg_replace('#^/public/admin#', '/admin', $requestUri);
+
+if (strpos($cleanAdminUri, '/admin') === 0) {
+    $subPath = ltrim(substr($cleanAdminUri, 6), '/');
+    if (empty($subPath) || $subPath === 'dashboard') {
+        $subPath = 'dashboard.php';
     }
-    if (is_file($adminFile . '.php')) {
-        require $adminFile . '.php';
-        exit;
+
+    $targetFile = __DIR__ . '/admin/' . $subPath;
+    if (!str_ends_with($targetFile, '.php') && !is_dir($targetFile)) {
+        $targetFile .= '.php';
     }
-    if ($requestUri === '/admin' || $requestUri === '/admin/dashboard') {
-        require __DIR__ . '/admin/dashboard.php';
+
+    if (is_file($targetFile)) {
+        require $targetFile;
         exit;
     }
 }
@@ -123,7 +126,7 @@ if ($requestUri === '/') {
 if (preg_match('#^/category/([a-zA-Z0-9-]+)$#', $requestUri, $matches)) {
     $categorySlug = $matches[1];
     
-    $stmt = $pdo->prepare("SELECT * FROM posts WHERE category_slug = ? ORDER BY id DESC");
+    $stmt = $pdo->prepare("SELECT p.*, u.username as author_name FROM posts p LEFT JOIN users u ON p.user_id = u.id LEFT JOIN categories c ON p.category_id = c.id WHERE c.slug = ? ORDER BY p.id DESC");
     $stmt->execute([$categorySlug]);
     $posts = $stmt->fetchAll();
 

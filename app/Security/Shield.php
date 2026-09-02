@@ -51,10 +51,10 @@ class Shield {
 
         // Fetch Anti-BruteForce Settings from options
         $opts = $this->getSecurityOptions();
-        $maxAccountFailures = (int)($opts['max_account_failures'] ?? 5);
-        $maxIpFailures = (int)($opts['max_ip_failures'] ?? 5);
-        $blockDuration = $opts['ip_block_duration'] ?? '1_day'; // 1_day, 1_week, 1_month, 1_year
-        $allowLockAdmin = ($opts['lock_admin_users'] ?? '1') === '1';
+        $maxAccountFailures = (int)($opts['sec_max_account_failures'] ?? $opts['max_account_failures'] ?? 5);
+        $maxIpFailures = (int)($opts['sec_max_ip_failures'] ?? $opts['max_ip_failures'] ?? 5);
+        $blockDuration = $opts['sec_ip_block_duration'] ?? $opts['ip_block_duration'] ?? '1_day'; // 1_day, 1_week, 1_month, 1_year
+        $allowLockAdmin = ($opts['sec_lock_admin_users'] ?? $opts['lock_admin_users'] ?? '1') === '1';
 
         // 1. Username-based protection (Lock account)
         if (!empty($username)) {
@@ -67,11 +67,11 @@ class Shield {
                     $attempts = (int)$user['failed_login_attempts'] + 1;
                     if ($attempts >= $maxAccountFailures) {
                         $lockUntil = date('Y-m-d H:i:s', strtotime('+15 minutes'));
-                        $upd = $this->pdo->prepare("UPDATE users SET failed_login_attempts = ?, locked_until = ? WHERE id = ?");
+                        $upd = $this->pdo->prepare("UPDATE users SET failed_login_attempts = ?, locked_until = ?, status = 'suspended' WHERE id = ?");
                         $upd->execute([$attempts, $lockUntil, $user['id']]);
 
                         // Notify admin of brute force detection
-                        if ($this->mailService && ($opts['notify_brute_force'] ?? '1') === '1') {
+                        if ($this->mailService && ($opts['sec_notify_brute_force'] ?? '1') === '1') {
                             $adminEmail = $opts['admin_email'] ?? 'admin@example.com';
                             $this->mailService->send($adminEmail, "Security Alert: Brute Force User Lockout",
                                 "Account '{$username}' has reached maximum failed login attempts ({$attempts}) and has been locked until {$lockUntil} from IP {$ip}."
@@ -126,7 +126,7 @@ class Shield {
         $opts = $this->getSecurityOptions();
         $isWhitelisted = $this->isIpWhitelisted($ip);
 
-        if (($opts['notify_admin_login'] ?? '1') === '1' && !$isWhitelisted) {
+        if (($opts['sec_notify_admin_login'] ?? '1') === '1' && !$isWhitelisted) {
             $adminEmail = $opts['admin_email'] ?? 'admin@example.com';
             if ($this->mailService) {
                 $this->mailService->send($adminEmail, "Security Alert: Non-Whitelisted Admin Login",
